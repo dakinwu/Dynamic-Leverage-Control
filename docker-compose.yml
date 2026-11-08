@@ -1,0 +1,99 @@
+name: dynamic-leverage-control
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: dynamic_leverage
+      POSTGRES_USER: dynamic
+      POSTGRES_PASSWORD: dynamic-local-only
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dynamic -d dynamic_leverage"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://dynamic:dynamic-local-only@postgres:5432/dynamic_leverage
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      WEB_ORIGIN: http://localhost:5173
+      AUTO_CREATE_SCHEMA: "false"
+      SHIOAJI_MODE: ${SHIOAJI_MODE:-readonly}
+      SHIOAJI_SECRET_FILE: /run/secrets/runtime.env
+      SHIOAJI_ACCOUNT_ID: ${SHIOAJI_ACCOUNT_ID:-}
+      TELEGRAM_SECRET_FILE: /run/secrets/runtime.env
+      FINMIND_TOKEN_FILE: /run/secrets/runtime.env
+      TWSE_MARKET_VALUATION_URL: ${TWSE_MARKET_VALUATION_URL:-https://www.twse.com.tw/zh/trading/statistics/index04.html}
+      MOPS_MARKET_EPS_URL: ${MOPS_MARKET_EPS_URL:-https://openapi.twse.com.tw/v1/opendata/t187ap14_L}
+      INITIAL_STRATEGY_NAV: ${INITIAL_STRATEGY_NAV:-500000}
+      PRODUCTION_ORDER_SUBMISSION_ENABLED: "false"
+    volumes:
+      - "${DVL_SECRET_FILE:-${LOCALAPPDATA:-./config}/dynamic-leverage-2x/secrets/runtime.env}:/run/secrets/runtime.env:ro"
+      - "./data:/app/data:ro"
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/system')",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5173:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["dvl", "scheduler", "--interval-seconds", "900"]
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://dynamic:dynamic-local-only@postgres:5432/dynamic_leverage
+      INITIAL_STRATEGY_NAV: ${INITIAL_STRATEGY_NAV:-500000}
+      PRODUCTION_ORDER_SUBMISSION_ENABLED: "false"
+      SHIOAJI_MODE: ${SHIOAJI_MODE:-readonly}
+      SHIOAJI_SECRET_FILE: /run/secrets/runtime.env
+      SHIOAJI_ACCOUNT_ID: ${SHIOAJI_ACCOUNT_ID:-}
+      TELEGRAM_SECRET_FILE: /run/secrets/runtime.env
+      TWSE_MARKET_VALUATION_URL: ${TWSE_MARKET_VALUATION_URL:-https://www.twse.com.tw/zh/trading/statistics/index04.html}
+      MOPS_MARKET_EPS_URL: ${MOPS_MARKET_EPS_URL:-https://openapi.twse.com.tw/v1/opendata/t187ap14_L}
+    volumes:
+      - "${DVL_SECRET_FILE:-${LOCALAPPDATA:-./config}/dynamic-leverage-2x/secrets/runtime.env}:/run/secrets/runtime.env:ro"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

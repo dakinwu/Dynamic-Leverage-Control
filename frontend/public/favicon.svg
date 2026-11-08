@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <title>Dynamic Leverage Control</title>
+  <rect x="0.5" y="0.5" width="31" height="31" rx="8" fill="#0b1110" stroke="#26332e" />
+  <path d="M7 23L13 16L18 20L25 9" stroke="#79e2a7" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+  <circle cx="25" cy="9" r="2.5" fill="#e5c66c" />
+</svg>

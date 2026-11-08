@@ -1,0 +1,3 @@
+# Build a local modular monolith
+
+The first production shape will be a private Docker Compose deployment with Python for data, research, strategies, risk, and the Shioaji adapter; FastAPI as the internal boundary; PostgreSQL as the durable audit store; and a React/TypeScript dashboard. We prefer a modular monolith over Redis, Kafka, or separately deployed services because one account and end-of-day decisions need transactional clarity and simple recovery more than independent scaling; modules may be extracted only when measured operational pressure justifies it, and Ruff replaces Black for formatting and checks.

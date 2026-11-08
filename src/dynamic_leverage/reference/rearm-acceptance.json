@@ -1,0 +1,22 @@
+{
+  "status": "passed",
+  "checked_at": "2026-09-22T07:36:30.453274+00:00",
+  "counts": {
+    "account_rows": 99108,
+    "fills": 11133,
+    "cases": 84,
+    "prior_trace_files_byte_identical": 84,
+    "source_hashes": 599
+  },
+  "backend_tests_passed": 196,
+  "checks": [
+    "frozen source hashes and allowed changes",
+    "28 legacy/benchmark paths byte-identical to prior artifacts",
+    "CSV returns and historical-peak drawdown",
+    "fill fees equal daily fees",
+    "cash nonnegative and execution lag",
+    "no buy after hard loss lock",
+    "all three known 2025 recross dates remain recovery"
+  ],
+  "new_out_of_sample": false
+}

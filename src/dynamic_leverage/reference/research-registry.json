@@ -1,0 +1,246 @@
+{
+  "schema": "research-registry-v1",
+  "research_date": "2026-09-22",
+  "records": [
+    {
+      "id": "legacy",
+      "identity": {
+        "strategy_version": "drawdown-budget:legacy",
+        "policy_config": {
+          "de_risk_start": 0.15,
+          "cash_trigger": 0.3,
+          "recovery_buy_fraction": 0.05,
+          "market_reentry": true,
+          "assumed_two_x_loss": 0.4,
+          "recovery_days": 5,
+          "fixed_target": null,
+          "earnings_filter": true,
+          "cash_rearm_drawdown": null,
+          "recovery_without_execution_buffer": false
+        },
+        "execution_config": {
+          "mode": "existing",
+          "recipe": "2x-cash-v1",
+          "ceiling": 2.0,
+          "initial_nav": 500000.0,
+          "commission": 0.001425,
+          "sell_tax": 0.001,
+          "slippage": 0.0005,
+          "minimum_commission": 20.0,
+          "execution_delay": 1,
+          "settlement_delay": 2,
+          "volume_fraction": 0.01,
+          "no_trade_band": 0.15
+        },
+        "dataset_sha256": "737f4a157fa34586f30fd1754bcf03705774d99cf6a0bd63382b2d8f7d44c8df"
+      },
+      "identity_sha256": "ecc6b456aaab7f82b6e4fce0334df72cd801948f6ae2300bb32d988a23a7bb07",
+      "status": "diagnostic-only-no-promotion",
+      "q7_pass": false,
+      "period": "2016-04-01 / 2026-09-17",
+      "normal_cagr": 0.13149728344671963,
+      "stress_cagr": 0.09777631123738995,
+      "new_out_of_sample": false,
+      "profitability_demonstrated": false,
+      "limitations": [
+        "歷史已用於設計，非新樣本外",
+        "估值公布延遲45/60天是假設",
+        "2000/2008為合成危機"
+      ],
+      "report_url": "/api/v1/research/rearm/report"
+    },
+    {
+      "id": "rearm",
+      "identity": {
+        "strategy_version": "drawdown-budget:rearm",
+        "policy_config": {
+          "de_risk_start": 0.15,
+          "cash_trigger": 0.3,
+          "recovery_buy_fraction": 0.05,
+          "market_reentry": true,
+          "assumed_two_x_loss": 0.4,
+          "recovery_days": 5,
+          "fixed_target": null,
+          "earnings_filter": true,
+          "cash_rearm_drawdown": 0.15,
+          "recovery_without_execution_buffer": false
+        },
+        "execution_config": {
+          "mode": "existing",
+          "recipe": "2x-cash-v1",
+          "ceiling": 2.0,
+          "initial_nav": 500000.0,
+          "commission": 0.001425,
+          "sell_tax": 0.001,
+          "slippage": 0.0005,
+          "minimum_commission": 20.0,
+          "execution_delay": 1,
+          "settlement_delay": 2,
+          "volume_fraction": 0.01,
+          "no_trade_band": 0.15
+        },
+        "dataset_sha256": "737f4a157fa34586f30fd1754bcf03705774d99cf6a0bd63382b2d8f7d44c8df"
+      },
+      "identity_sha256": "e5823dd843964d249f505ce06e868f68d7de31aa1cd5ec96cc1071788c33d997",
+      "status": "reject-live-candidacy",
+      "q7_pass": false,
+      "period": "2016-04-01 / 2026-09-17",
+      "normal_cagr": 0.15538385826464896,
+      "stress_cagr": 0.13423286410950186,
+      "new_out_of_sample": false,
+      "profitability_demonstrated": false,
+      "limitations": [
+        "歷史已用於設計，非新樣本外",
+        "估值公布延遲45/60天是假設",
+        "2000/2008為合成危機"
+      ],
+      "report_url": "/api/v1/research/rearm/report"
+    },
+    {
+      "id": "rearm-fast",
+      "identity": {
+        "strategy_version": "drawdown-budget:rearm-fast",
+        "policy_config": {
+          "de_risk_start": 0.15,
+          "cash_trigger": 0.3,
+          "recovery_buy_fraction": 0.1,
+          "market_reentry": true,
+          "assumed_two_x_loss": 0.4,
+          "recovery_days": 5,
+          "fixed_target": null,
+          "earnings_filter": true,
+          "cash_rearm_drawdown": 0.15,
+          "recovery_without_execution_buffer": false
+        },
+        "execution_config": {
+          "mode": "existing",
+          "recipe": "2x-cash-v1",
+          "ceiling": 2.0,
+          "initial_nav": 500000.0,
+          "commission": 0.001425,
+          "sell_tax": 0.001,
+          "slippage": 0.0005,
+          "minimum_commission": 20.0,
+          "execution_delay": 1,
+          "settlement_delay": 2,
+          "volume_fraction": 0.01,
+          "no_trade_band": 0.15
+        },
+        "dataset_sha256": "737f4a157fa34586f30fd1754bcf03705774d99cf6a0bd63382b2d8f7d44c8df"
+      },
+      "identity_sha256": "4926781c9590a2e69095195696f9ee0dade4f099b08f59769d6aceeda3947dc8",
+      "status": "diagnostic-only-no-promotion",
+      "q7_pass": false,
+      "period": "2016-04-01 / 2026-09-17",
+      "normal_cagr": 0.1532432830580559,
+      "stress_cagr": 0.13397214881275699,
+      "new_out_of_sample": false,
+      "profitability_demonstrated": false,
+      "limitations": [
+        "歷史已用於設計，非新樣本外",
+        "估值公布延遲45/60天是假設",
+        "2000/2008為合成危機"
+      ],
+      "report_url": "/api/v1/research/rearm/report"
+    },
+    {
+      "id": "rearm-cap-diagnostic",
+      "identity": {
+        "strategy_version": "drawdown-budget:rearm-cap-diagnostic",
+        "policy_config": {
+          "de_risk_start": 0.15,
+          "cash_trigger": 0.3,
+          "recovery_buy_fraction": 0.05,
+          "market_reentry": true,
+          "assumed_two_x_loss": 0.4,
+          "recovery_days": 5,
+          "fixed_target": null,
+          "earnings_filter": true,
+          "cash_rearm_drawdown": 0.15,
+          "recovery_without_execution_buffer": true
+        },
+        "execution_config": {
+          "mode": "existing",
+          "recipe": "2x-cash-v1",
+          "ceiling": 2.0,
+          "initial_nav": 500000.0,
+          "commission": 0.001425,
+          "sell_tax": 0.001,
+          "slippage": 0.0005,
+          "minimum_commission": 20.0,
+          "execution_delay": 1,
+          "settlement_delay": 2,
+          "volume_fraction": 0.01,
+          "no_trade_band": 0.15
+        },
+        "dataset_sha256": "737f4a157fa34586f30fd1754bcf03705774d99cf6a0bd63382b2d8f7d44c8df"
+      },
+      "identity_sha256": "98cbeb4ab7480cede36c9ba5d6ac91267fa993c75a97f0a00758e7bc092d483e",
+      "status": "diagnostic-only-no-promotion",
+      "q7_pass": false,
+      "period": "2016-04-01 / 2026-09-17",
+      "normal_cagr": 0.1941961406002468,
+      "stress_cagr": 0.17442800008905524,
+      "new_out_of_sample": false,
+      "profitability_demonstrated": false,
+      "limitations": [
+        "歷史已用於設計，非新樣本外",
+        "估值公布延遲45/60天是假設",
+        "2000/2008為合成危機"
+      ],
+      "report_url": "/api/v1/research/rearm/report"
+    },
+    {
+      "id": "rearm-both-diagnostic",
+      "identity": {
+        "strategy_version": "drawdown-budget:rearm-both-diagnostic",
+        "policy_config": {
+          "de_risk_start": 0.15,
+          "cash_trigger": 0.3,
+          "recovery_buy_fraction": 0.1,
+          "market_reentry": true,
+          "assumed_two_x_loss": 0.4,
+          "recovery_days": 5,
+          "fixed_target": null,
+          "earnings_filter": true,
+          "cash_rearm_drawdown": 0.15,
+          "recovery_without_execution_buffer": true
+        },
+        "execution_config": {
+          "mode": "existing",
+          "recipe": "2x-cash-v1",
+          "ceiling": 2.0,
+          "initial_nav": 500000.0,
+          "commission": 0.001425,
+          "sell_tax": 0.001,
+          "slippage": 0.0005,
+          "minimum_commission": 20.0,
+          "execution_delay": 1,
+          "settlement_delay": 2,
+          "volume_fraction": 0.01,
+          "no_trade_band": 0.15
+        },
+        "dataset_sha256": "737f4a157fa34586f30fd1754bcf03705774d99cf6a0bd63382b2d8f7d44c8df"
+      },
+      "identity_sha256": "67d89cc7e704520365e911915b3c38cba5b24f3c900b2dd47fb5ed4b07153487",
+      "status": "diagnostic-only-no-promotion",
+      "q7_pass": false,
+      "period": "2016-04-01 / 2026-09-17",
+      "normal_cagr": 0.20336149453030727,
+      "stress_cagr": 0.18668919641652115,
+      "new_out_of_sample": false,
+      "profitability_demonstrated": false,
+      "limitations": [
+        "歷史已用於設計，非新樣本外",
+        "估值公布延遲45/60天是假設",
+        "2000/2008為合成危機"
+      ],
+      "report_url": "/api/v1/research/rearm/report"
+    }
+  ],
+  "evidence_files": {
+    "rearm-results.json": "49db2972b4d8773b72cfffcd23dcd907e3615071e6d2884eece2138f7edd5654",
+    "rearm-acceptance.json": "58637d34b6a218ca6634ea2991d6cd54b05234ebf3b3a12bfdb177ba53b7a6cc",
+    "rearm-findings.md": "cd890513ca40f3453374a7f525920ae2f1922d2691af1bba33d2881df9751725"
+  }
+}
