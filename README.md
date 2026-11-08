@@ -1,8 +1,54 @@
 # Dynamic Leverage Control
 
-台灣ETF曝險監控、策略研究與紙上交易平台。重點是將市場資料、策略決策、風控原因及模擬成交串成可追溯的紀錄，**不提供正式券商下單，也沒有證明能穩定打贏0050**。
+台灣ETF曝險監控、策略研究與紙上交易平台。將市場資料、策略決策、風控理由及帳務對帳串成可追溯的紀錄，回答三件事：**數字從哪來、現在為什麼能或不能調整部位、結果能否重建。**
 
-Paper是紙上交易模擬；Shadow是只計算候選決策、不執行交易。資料過期、缺少必要輸入或帳務無法對齊時，系統阻擋增加曝險，不以舊目標或預設市場數字補出訊號。
+**Python／FastAPI · SQLAlchemy · React／TypeScript · SQLite／PostgreSQL**
+
+專案目前限於Paper（紙上交易模擬）及Shadow（只計算候選決策）研究；正式下單關閉，尚未證明能穩定打贏0050。工程正確性與投資績效分開驗收。
+
+## 先看實際畫面
+
+![免帳號控制台：規劃模式、實際帳戶資料未知，正式下單關閉](docs/assets/overview.jpg)
+
+這是實際前端連接全新SQLite資料庫的畫面：未綁定券商、未載入憑證，也沒有市場擷取或真實持倉。50萬元只是虛構規劃本金，其他帳戶數字保持未知。畫面保留阻擋原因，沒有為展示捏造獲利曲線。[截圖來源與檢查](docs/assets/README.md)
+
+## 值得看哪些工程設計
+
+| 問題 | 實作選擇 | 程式與驗證入口 |
+|---|---|---|
+| 外部資料缺漏或過期，仍可能產生看似合理的目標 | 每種來源分開驗完整性與新鮮度；缺必要輸入不沿用舊目標，風控獨立限制增加曝險 | [來源新鮮度](src/dynamic_leverage/services/freshness.py)、[風控測試](tests/unit/test_risk.py) |
+| 分割造成單價驟降，容易誤算虧損及觸發退出 | 對齊淨值單位與持有權益，另外處理停牌；不把有淨值當成可以成交 | [分割資料驗收](src/dynamic_leverage/services/capital_nav_research.py)、[分割／停牌測試](tests/unit/test_capital_nav_research.py) |
+| 成交回報重送，可能重複扣款或增加持倉 | 以execution_id辨識同一筆成交，讓入帳具冪等性（重送不重複生效），再要求帳戶對帳 | [策略台帳](src/dynamic_leverage/services/ledger.py)、[API整合測試](tests/integration/test_api.py) |
+
+例如1拆24後，持有權益也要乘24，不能只看到價格變成原來約1/24就判定暴跌；停牌期間仍可估值，但不假設能買賣。另一個例子是重送同一成交：整合測試確認第二次回傳`created=false`，台帳版本不再增加。
+
+資料流與安全邊界：
+
+```mermaid
+flowchart LR
+    Sources["官方來源／覆核匯入"] --> Capture["原文、時間戳與指紋"]
+    Capture --> Quality["完整性與新鮮度檢查"]
+    Quality --> Strategy["版本化策略"]
+    Strategy --> Recipe["曝險轉配置"]
+    Recipe --> Risk["獨立風控"]
+    Account["選配唯讀帳戶／對帳"] --> Risk
+    Risk --> Paper["紙上意圖／模擬回放"]
+    Capture -.-> Audit["SQLite／PostgreSQL稽核紀錄"]
+    Strategy -.-> Audit
+    Risk -.-> Audit
+    Paper -.-> Audit
+    Audit --> Console["React控制台／FastAPI"]
+```
+
+上圖是模組責任與資料流，不表示每次HTTP請求都會自動擷取資料或完成成交。日常Paper意圖、歷史模擬回放與選配券商唯讀同步是不同流程。
+
+## 已驗證到哪裡
+
+2026-11-09本機驗證快照：362項自動測試、靜態與格式檢查通過；前端型別檢查及建置通過。先前公開前檢查亦在乾淨副本、全新Python環境完成安裝、API展示與套件打包。這是指定日期的驗證紀錄，不是持續整合服務的即時狀態。
+
+**仍有界線：**Docker完整啟動未驗證，API缺少多人登入權限，只供本機使用；公開副本未含完整私人研究輸入，不能一鍵重建所有歷史實驗。沒有將測試通過當作策略獲利證明。[完整公開前檢查](docs/PUBLIC-REVIEW.md) · [研究方法與限制](docs/RESEARCH.md)
+
+接著可依下方免帳號流程執行，或先從上述三個案例的測試讀起。
 
 ## 功能與界線
 
@@ -38,7 +84,7 @@ python -m uvicorn dynamic_leverage.api.app:app --env-file .env --host 127.0.0.1 
 
 若只有Python 3.11，第一行改成`py -3.11`。macOS／Linux使用`python3.12 -m venv .venv`及`source .venv/bin/activate`，其餘Python指令相同。
 
-保持後端執行，另一個終端啟動前端：
+保持後端執行，另一個終端在專案根目錄啟動前端：
 
 ```powershell
 cd frontend

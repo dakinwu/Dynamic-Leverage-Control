@@ -28,6 +28,24 @@ def test_public_check_redacts_token_and_reports_only_location(tmp_path):
     assert value not in str(findings)
 
 
+def test_reviewed_image_does_not_allow_modified_or_unlisted_binary(tmp_path):
+    import hashlib
+
+    module = checker()
+    name = "docs/assets/overview.jpg"
+    image = tmp_path / name
+    image.parent.mkdir(parents=True)
+    content = b"\xff\xd8reviewed screenshot fixture\xff\xd9"
+    image.write_bytes(content)
+    module.REVIEWED_BINARY_SHA256 = {name: hashlib.sha256(content).hexdigest()}
+    assert module.inspect(tmp_path, [name]) == []
+    image.write_bytes(content + b"changed")
+    assert module.inspect(tmp_path, [name])[0]["kind"] == "binary_requires_manual_review"
+    other = "docs/assets/unreviewed.jpg"
+    (tmp_path / other).write_bytes(content)
+    assert module.inspect(tmp_path, [other])[0]["kind"] == "binary_requires_manual_review"
+
+
 def test_example_environment_matches_settings_and_disables_external_accounts():
     from dynamic_leverage.config import Settings
 

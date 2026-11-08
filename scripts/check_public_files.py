@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
@@ -9,6 +10,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BLOCKED = {".pfx", ".p12", ".pem", ".key", ".db", ".sqlite", ".sqlite3", ".zip", ".7z"}
+REVIEWED_BINARY_SHA256 = {
+    "docs/assets/overview.jpg": "27d51808df866b4d293845f76fb3bc09eff8b3817666a8c172ab92365c7c025a",
+}
 RULES = {
     "private_home_path": re.compile(r"(?i)[a-z]:[\\/]Users[\\/][^\\/\s]+|/c/" + r"Users/[^/\s]+"),
     "private_key": re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
@@ -42,7 +46,8 @@ def inspect(root: Path, names: list[str]) -> list[dict]:
         try:
             text = path.read_text(encoding="utf-8")
         except UnicodeError:
-            issues.append({"file": name, "kind": "binary_requires_manual_review"})
+            if hashlib.sha256(path.read_bytes()).hexdigest() != REVIEWED_BINARY_SHA256.get(name):
+                issues.append({"file": name, "kind": "binary_requires_manual_review"})
             continue
         for kind, pattern in RULES.items():
             for number, line in enumerate(text.splitlines(), 1):
