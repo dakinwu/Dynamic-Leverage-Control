@@ -1,5 +1,7 @@
 # Dynamic Leverage Control
 
+**An auditable exposure-monitoring, strategy-research, and paper-trading platform for Taiwan ETFs.** Every target position traces back to its source data, strategy version, and risk decision: the system blocks on stale or incomplete inputs, handles stock splits without false loss signals and trading halts without phantom fills, and books fills idempotently (362 automated tests). Live trading is disabled, and no strategy has yet been shown to beat 0050 (Taiwan's benchmark ETF); engineering correctness is verified separately from returns.
+
 台灣ETF曝險監控、策略研究與紙上交易平台。將市場資料、策略決策、風控理由及帳務對帳串成可追溯的紀錄，回答三件事：**數字從哪來、現在為什麼能或不能調整部位、結果能否重建。**
 
 **Python／FastAPI · SQLAlchemy · React／TypeScript · SQLite／PostgreSQL**
