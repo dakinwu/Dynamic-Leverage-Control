@@ -77,3 +77,9 @@ class OfficialIndicesClient:
 
     async def capital_00685l_pcf_snapshot(self) -> HttpSnapshot:
         return await self.http.fetch(CAPITAL_00685L_PCF)
+
+    async def twse_distributions_snapshot(self, symbol: str, year: int) -> HttpSnapshot:
+        """TWSE ETF cash-distribution table (ex-date, payment date, amount)."""
+        from dynamic_leverage.services.corporate_actions import distribution_url
+
+        return await self.http.fetch(distribution_url(symbol, year))

@@ -237,6 +237,13 @@ h2 { letter-spacing: -.025em; }
 .primary-action:hover { background: #9af0bd; }
 .primary-action:disabled { cursor: not-allowed; opacity: .45; }
 .sync-message { margin: 12px 0 0; color: var(--green); font-size: 12px; }
+.dividend-confirmations { margin: 20px 0; }
+.dividend-confirmations ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.dividend-confirmations li { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: end; }
+.dividend-confirmations li > div { display: grid; gap: 4px; }
+@media (max-width: 720px) { .dividend-confirmations li { grid-template-columns: 1fr; } }
+.action-error { margin: 8px 0 0; color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
+button:disabled { opacity: .6; }
 .account-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; margin: 28px 0; background: var(--line); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
 .account-grid div { display: grid; gap: 10px; padding: 22px; background: #111916; }
 .account-grid strong { font: 650 18px "IBM Plex Mono", monospace; }

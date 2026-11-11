@@ -68,3 +68,43 @@ def test_capital_loss_limit_allows_only_exposure_reduction() -> None:
     assert reduction.approved is True
     assert reduction.allowed_exposure == Decimal("0.8")
     assert reduction.risk_reducing_only is True
+
+
+def test_mandatory_reduction_honours_a_lower_requested_target() -> None:
+    decision = RiskGate().evaluate(
+        RiskContext(
+            requested_exposure=Decimal("1.0"),
+            actual_exposure=Decimal("2.06"),
+            account_eligible=True,
+        )
+    )
+    assert decision.approved is True
+    assert decision.allowed_exposure == Decimal("1.0")
+    assert decision.reason_codes == ("MANDATORY_EXPOSURE_REDUCTION",)
+    assert decision.risk_reducing_only is True
+
+
+def test_mandatory_reduction_caps_a_higher_requested_target_at_ceiling() -> None:
+    decision = RiskGate().evaluate(
+        RiskContext(
+            requested_exposure=Decimal("2.4"),
+            actual_exposure=Decimal("2.06"),
+            account_eligible=True,
+        )
+    )
+    assert decision.allowed_exposure == Decimal("2.0")
+    assert decision.reason_codes == ("MANDATORY_EXPOSURE_REDUCTION",)
+
+
+def test_production_order_refusal_is_reported_before_any_state_check() -> None:
+    decision = RiskGate().evaluate(
+        RiskContext(
+            requested_exposure=Decimal("1.2"),
+            actual_exposure=Decimal("1.0"),
+            broker_safe=False,
+            manual_halt=True,
+            production_order_requested=True,
+        )
+    )
+    assert decision.approved is False
+    assert decision.reason_codes == ("PRODUCTION_ORDER_PATH_DISABLED",)

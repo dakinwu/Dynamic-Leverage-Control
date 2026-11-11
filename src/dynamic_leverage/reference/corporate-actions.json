@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "reviewed_on": "2026-11-11",
+  "ratio_definition": "new_units / old_units",
+  "scope": "Officially sourced ETF splits for the strategy's allowed instruments. Add a new event only after reviewing its official sources.",
+  "splits": [
+    {
+      "symbol": "0050",
+      "ratio": 4,
+      "last_trade_date": "2025-06-10",
+      "halt_start": "2025-06-11",
+      "halt_end": "2025-06-17",
+      "resume_date": "2025-06-18",
+      "evidence": [
+        {
+          "url": "https://www.twse.com.tw/staticFiles/news/news/tsecnews/8a8216d696b406fc0196ce27c2e90063.pdf",
+          "archived": "data/reference/corporate-actions-20260928/0050-twse-split.pdf",
+          "sha256": "33a58af2b6377f381d250406ed750999756508c2d96f7a2f45443201d50cbcb7"
+        },
+        {
+          "url": "https://wwwc.twse.com.tw/zh/ETFortune/announcement?company=A00005&date=20250617&fund=0050&seq=1&type=all",
+          "archived": "data/reference/corporate-actions-20260928/0050-issuer-split.html",
+          "sha256": "2e611c010c5cbfa68e3663cc1a1f44bb299cdc3d40bef6f540d45a5d37a7664c"
+        }
+      ]
+    },
+    {
+      "symbol": "00631L",
+      "ratio": 22,
+      "last_trade_date": "2026-03-24",
+      "halt_start": "2026-03-25",
+      "halt_end": "2026-03-30",
+      "resume_date": "2026-03-31",
+      "evidence": [
+        {
+          "url": "https://www.twse.com.tw/staticFiles/news/news/tsecnews/8a8216d69c37647f019c994679ba00cf.pdf",
+          "archived": "data/reference/corporate-actions-20260928/00631L-twse-split.pdf",
+          "sha256": "4273c45647752c6214427f90fece3485c18e69722f1f691789a691209f53b8c5"
+        },
+        {
+          "url": "https://wwwc.twse.com.tw/zh/ETFortune/announcement?company=A00005&date=20260330&fund=00631L&seq=1&type=other",
+          "archived": "data/reference/corporate-actions-20260928/00631L-issuer-split.html",
+          "sha256": "e68df0c10f8b4cbb26e80918324ecac9b9ecb27d6dd2c5f6a2324e6d00d5a439"
+        }
+      ]
+    },
+    {
+      "symbol": "00685L",
+      "ratio": 24,
+      "last_trade_date": "2026-06-30",
+      "halt_start": "2026-07-01",
+      "halt_end": "2026-07-06",
+      "resume_date": "2026-07-07",
+      "evidence": [
+        {
+          "url": "https://www.capitalfund.com.tw/ECStorge/fund/news/20260706A.pdf",
+          "archived": null,
+          "sha256": null,
+          "note": "page 1; reviewed in docs/research/00685l-source-acceptance-20261018.md (archive is private)"
+        },
+        {
+          "url": "https://www.twse.com.tw/zh/ETFortune/announcement?company=A00016&date=20260529&fund=00685L&seq=1&type=all",
+          "archived": null,
+          "sha256": null
+        }
+      ]
+    }
+  ]
+}

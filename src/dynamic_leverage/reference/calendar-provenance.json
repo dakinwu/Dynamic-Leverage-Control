@@ -1,6 +1,20 @@
 {
-  "source": "https://www.twse.com.tw/holidaySchedule/holidaySchedule?response=json&queryYear=115",
-  "retrieved_at": "2026-09-28",
-  "sha256": "7fefe785ea7155a5004a2eb74486ad865ea5c4b5f02ee0cffbbdacb1ca2ea390",
-  "scope": "scheduled annual holidays; extraordinary closures require a new verified snapshot"
+  "calendars": [
+    {
+      "year": 2026,
+      "file": "twse-calendar-2026.json",
+      "source": "https://www.twse.com.tw/holidaySchedule/holidaySchedule?response=json&queryYear=115",
+      "retrieved_at": "2026-09-28",
+      "sha256": "7fefe785ea7155a5004a2eb74486ad865ea5c4b5f02ee0cffbbdacb1ca2ea390"
+    }
+  ],
+  "scope": "scheduled annual holidays; extraordinary closures require a new verified snapshot",
+  "pending": [
+    {
+      "year": 2027,
+      "checked_at": "2026-11-09",
+      "source": "https://www.twse.com.tw/rwd/zh/holidaySchedule/holidaySchedule?date=20270101&response=json",
+      "status": "official schedule not yet published (title 116 年市場開休市日期, total 0)"
+    }
+  ]
 }

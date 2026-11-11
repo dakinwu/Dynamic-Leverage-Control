@@ -7,10 +7,17 @@ from datetime import UTC, date, datetime, time
 from decimal import Decimal, InvalidOperation
 from html.parser import HTMLParser
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from dynamic_leverage.domain.models import StrategyInputs
 from dynamic_leverage.domain.valuation import validated_valuation_row
+from dynamic_leverage.infrastructure.providers.vix import parse_vix_close
 from dynamic_leverage.infrastructure.repository import AuditRepository
+from dynamic_leverage.services.freshness import contract_max_age_minutes
+
+# Same limit as the taiex_valuation freshness contract, applied to the data date.
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+VALUATION_MAX_AGE_DAYS = contract_max_age_minutes("taiex_valuation") // (24 * 60)
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,8 +195,45 @@ def parse_taiwan_vix(records: list[Any]) -> Decimal | None:
     return None
 
 
-def parse_pcf_exposure(records: list[Any], code: str) -> Decimal | None:
-    """Best-effort PCF exposure extraction for diagnostics, never for pricing."""
+def taiwan_vix_for_session(records: list[Any], session: date) -> tuple[Decimal | None, date | None]:
+    """Return the official dated VIX close for ``session`` and the latest dated session.
+
+    Only TAIFEX daily files whose body date matches their requested date count;
+    an undated or mismatched body is unknown, never a substitute for the session.
+    """
+    latest: date | None = None
+    for record in records:
+        payload = record.payload or {}
+        body = payload.get("body_text", "") if isinstance(payload, dict) else ""
+        try:
+            trade_date, value = parse_vix_close(body, getattr(record, "source", ""))
+        except (ValueError, TypeError):
+            continue
+        if trade_date == session:
+            return value, trade_date
+        latest = trade_date if latest is None else max(latest, trade_date)
+    return None, latest
+
+
+@dataclass(frozen=True, slots=True)
+class PcfExposure:
+    exposure: Decimal
+    trade_date: date
+
+
+_PCF_TRADE_DATE = re.compile(r"交易日期\s*[:：]\s*(\d{4})/(\d{1,2})/(\d{1,2})")
+_PCF_WEIGHT = re.compile(r"商品權重\s+(-?\d{1,3}(?:\.\d+)?)")
+
+
+def parse_pcf_exposure(records: list[Any], code: str) -> PcfExposure | None:
+    """Read exposure and its trade date from an issuer PCF page.
+
+    Accepted evidence, in order: the holdings tables (sum of futures and stock
+    ``商品權重`` percentages), or an explicit ``實際曝險 NNN%`` statement. Both
+    need a ``交易日期``. Prospectus bands such as "曝險部位不得低於...180%" are
+    limits, not observations, and are never read. Range and currency checks are
+    the caller's job.
+    """
     for record in records:
         raw = str(_body(record))
         parser = _TextExtractor()
@@ -198,22 +242,35 @@ def parse_pcf_exposure(records: list[Any], code: str) -> Decimal | None:
             text = parser.text
         except Exception:  # noqa: BLE001
             text = raw
-        patterns = (
-            r"(?:實際)?曝險[^0-9]{0,40}(\d{2,3}(?:\.\d+)?)\s*%",
-            r"(?:TX|臺指)[^0-9]{0,80}(\d{2,3}(?:\.\d+)?)\s*%",
-        )
-        for pattern in patterns:
-            match = re.search(pattern, text, flags=re.IGNORECASE)
-            if match:
-                value = _decimal(match.group(1))
-                if value is not None and Decimal("0") < value <= Decimal("400"):
-                    return value / Decimal("100")
+        date_match = _PCF_TRADE_DATE.search(text)
+        if date_match is None:
+            continue
+        try:
+            trade_date = date(*(int(part) for part in date_match.groups()))
+        except ValueError:
+            continue
+        exposure = None
+        start = text.find("基金權重-期貨")
+        if start >= 0:
+            end = min(
+                (i for i in (text.find("匯率", start), text.find("基金資產", start)) if i > 0),
+                default=len(text),
+            )
+            weights = [_decimal(match) for match in _PCF_WEIGHT.findall(text[start:end])]
+            if weights and all(weight is not None for weight in weights):
+                exposure = sum(weights, Decimal("0")) / Decimal("100")
+        if exposure is None:
+            stated = re.search(r"實際曝險[^0-9%]{0,20}(\d{1,3}(?:\.\d+)?)\s*%", text)
+            value = _decimal(stated.group(1)) if stated else None
+            exposure = value / Decimal("100") if value is not None else None
+        if exposure is not None:
+            return PcfExposure(exposure=exposure, trade_date=trade_date)
     return None
 
 
 def _valuation_inputs(
     records: list[Any], as_of: date
-) -> tuple[Decimal | None, Decimal | None, Decimal | None, str | None, int]:
+) -> tuple[Decimal | None, Decimal | None, Decimal | None, str | None, date | None, int]:
     by_month: dict[tuple[int, int], tuple[date, Decimal, Decimal, str]] = {}
     for record in records:
         payload = record.payload or {}
@@ -232,7 +289,7 @@ def _valuation_inputs(
                 by_month[key] = (row_date, pe, eps, record.snapshot_id)
     points = sorted(by_month.values(), key=lambda point: point[0])
     if not points:
-        return None, None, None, None, 0
+        return None, None, None, None, None, 0
     current_date, current_pe, current_eps, source_id = points[-1]
     # Percentile uses the previous 120 valid observations and excludes the
     # current month. Mid-rank ties make the result deterministic.
@@ -256,7 +313,7 @@ def _valuation_inputs(
         default=None,
     )
     eps_yoy = None if prior is None else current_eps / prior[2] - Decimal("1")
-    return current_pe, percentile, eps_yoy, source_id, len(history)
+    return current_pe, percentile, eps_yoy, source_id, current_date, len(history)
 
 
 def _records_available_on(records: list[Any], as_of: date) -> list[Any]:
@@ -284,8 +341,9 @@ def build_strategy_inputs(
 ) -> StrategyPipelineResult:
     if decision_at is not None and decision_at.tzinfo is None:
         raise ValueError("decision_at must include a timezone")
+    # A replay date means the end of that Taipei trading day, not of the UTC day.
     cutoff = decision_at or (
-        datetime.combine(as_of, time.max, tzinfo=UTC) if as_of else datetime.now(UTC)
+        datetime.combine(as_of, time.max, tzinfo=TAIPEI_TZ) if as_of else datetime.now(UTC)
     )
 
     def available(records: list[Any]) -> list[Any]:
@@ -315,9 +373,12 @@ def build_strategy_inputs(
     points = parse_taiex_points(taiex_records)
     current = next((point for point in reversed(points) if point.as_of <= market_date), None)
     rv20 = compute_rv20([point for point in points if point.as_of <= market_date])
-    vix = parse_taiwan_vix(vix_records)
-    pe, pe_percentile, eps_yoy, valuation_id, valuation_points = _valuation_inputs(
+    vix, vix_trade_date = taiwan_vix_for_session(vix_records, market_date)
+    pe, pe_percentile, eps_yoy, valuation_id, valuation_as_of, valuation_points = _valuation_inputs(
         valuation_records, market_date
+    )
+    valuation_age_days = (
+        (market_date - valuation_as_of).days if valuation_as_of is not None else None
     )
     drawdown = None
     if current is not None:
@@ -330,10 +391,23 @@ def build_strategy_inputs(
             ("pe_percentile", pe_percentile),
             ("eps_yoy", eps_yoy),
             ("rv20", rv20),
-            ("taiwan_vix", vix),
+            ("taiwan_vix", vix if vix is not None or vix_trade_date is None else "stale"),
         )
         if value is None
     )
+    # Present but not for this session (or too old) is stale, not missing.
+    stale = tuple(
+        name
+        for name, is_stale in (
+            ("taiwan_vix_stale", vix is None and vix_trade_date is not None),
+            (
+                "valuation_stale",
+                valuation_age_days is not None and valuation_age_days > VALUATION_MAX_AGE_DAYS,
+            ),
+        )
+        if is_stale
+    )
+    missing = (*missing, *stale)
     snapshot_ids = tuple(
         record.snapshot_id for record in (*taiex_records, *vix_records, *valuation_records)
     )
@@ -346,6 +420,10 @@ def build_strategy_inputs(
         "valuation_points": str(valuation_points),
         "valuation_required_points": "120",
         "vix_source": vix_records[0].source if vix_records else "missing",
+        "vix_trade_date": vix_trade_date.isoformat() if vix_trade_date else "missing",
+        "valuation_as_of": valuation_as_of.isoformat() if valuation_as_of else "missing",
+        "valuation_max_age_days": str(VALUATION_MAX_AGE_DAYS),
+        "critical_data_safe": "false" if missing else "true",
     }
     # Keep the raw inputs visible to the operator.  The dashboard must show
     # what the policy actually consumed, rather than only the final target.
@@ -377,6 +455,7 @@ def build_strategy_inputs(
             taiwan_vix=vix,
             taiex_daily_return=current.daily_return,
             taiex_drawdown=drawdown,
+            # Reached only when no input is missing or stale for market_date.
             critical_data_safe=True,
         ),
         snapshot_ids,

@@ -1,6 +1,8 @@
 # Dynamic Leverage Control
 
-**An auditable exposure-monitoring, strategy-research, and paper-trading platform for Taiwan ETFs.** Every target position traces back to its source data, strategy version, and risk decision: the system blocks on stale or incomplete inputs, handles stock splits without false loss signals and trading halts without phantom fills, and books fills idempotently (362 automated tests). Live trading is disabled, and no strategy has yet been shown to beat 0050 (Taiwan's benchmark ETF); engineering correctness is verified separately from returns.
+**An auditable exposure-monitoring, strategy-research, and paper-trading platform for Taiwan ETFs.** Every target position traces back to its source data, strategy version, and risk decision. Paper intents are blocked on stale or incomplete inputs, fills are booked idempotently, the strategy ledger books officially sourced stock splits and cash dividends, and the research simulators replay splits and trading halts (450+ automated tests). Live trading is disabled, and no strategy has yet been shown to beat 0050 (Taiwan's benchmark ETF); engineering correctness is verified separately from returns.
+
+[![CI](https://github.com/dakinwu/Dynamic-Leverage-Control/actions/workflows/ci.yml/badge.svg)](https://github.com/dakinwu/Dynamic-Leverage-Control/actions/workflows/ci.yml)
 
 台灣ETF曝險監控、策略研究與紙上交易平台。將市場資料、策略決策、風控理由及帳務對帳串成可追溯的紀錄，回答三件事：**數字從哪來、現在為什麼能或不能調整部位、結果能否重建。**
 
@@ -19,10 +21,10 @@
 | 問題 | 實作選擇 | 程式與驗證入口 |
 |---|---|---|
 | 外部資料缺漏或過期，仍可能產生看似合理的目標 | 每種來源分開驗完整性與新鮮度；缺必要輸入不沿用舊目標，風控獨立限制增加曝險 | [來源新鮮度](src/dynamic_leverage/services/freshness.py)、[風控測試](tests/unit/test_risk.py) |
-| 分割造成單價驟降，容易誤算虧損及觸發退出 | 對齊淨值單位與持有權益，另外處理停牌；不把有淨值當成可以成交 | [分割資料驗收](src/dynamic_leverage/services/capital_nav_research.py)、[分割／停牌測試](tests/unit/test_capital_nav_research.py) |
+| 分割或除息造成單價驟降，容易誤算虧損及觸發退出 | **實際策略台帳也處理分割與配息**：登記的官方分割在券商顯示新單位時入帳（股數×比例、NAV不變）；官方配息在除息日記為應收、發放日轉為現金，再由本人確認實收。研究模擬器另對齊淨值單位並處理停牌，不把有淨值當成可以成交 | [台帳公司行動](src/dynamic_leverage/services/ledger_actions.py)、[台帳分割／配息測試](tests/unit/test_ledger_corporate_actions.py)、[研究分割／停牌測試](tests/unit/test_capital_nav_research.py) |
 | 成交回報重送，可能重複扣款或增加持倉 | 以execution_id辨識同一筆成交，讓入帳具冪等性（重送不重複生效），再要求帳戶對帳 | [策略台帳](src/dynamic_leverage/services/ledger.py)、[API整合測試](tests/integration/test_api.py) |
 
-例如1拆24後，持有權益也要乘24，不能只看到價格變成原來約1/24就判定暴跌；停牌期間仍可估值，但不假設能買賣。另一個例子是重送同一成交：整合測試確認第二次回傳`created=false`，台帳版本不再增加。
+例如研究模擬器遇到1拆24時，持有權益也要乘24，不能只看到價格變成原來約1/24就判定暴跌；停牌期間仍可估值，但不假設能買賣。另一個例子是重送同一成交：整合測試確認第二次回傳`created=false`，台帳版本不再增加。
 
 資料流與安全邊界：
 
@@ -46,7 +48,7 @@ flowchart LR
 
 ## 已驗證到哪裡
 
-2026-11-09本機驗證快照：362項自動測試、靜態與格式檢查通過；前端型別檢查及建置通過。先前公開前檢查亦在乾淨副本、全新Python環境完成安裝、API展示與套件打包。這是指定日期的驗證紀錄，不是持續整合服務的即時狀態。
+2026-11-11本機驗證快照：459項後端自動測試、靜態與格式檢查通過；前端型別檢查、13項前端單元測試及建置通過。先前公開前檢查亦在乾淨副本、全新Python環境完成安裝、API展示與套件打包。這是指定日期的本機驗證紀錄；[CI設定](.github/workflows/ci.yml)另在每次推送執行同一組檢查，並加上PostgreSQL遷移、API測試及Docker建置，結果以上方徽章為準。
 
 **仍有界線：** Docker完整啟動未驗證，API缺少多人登入權限，只供本機使用；公開副本未含完整私人研究輸入，不能一鍵重建所有歷史實驗。沒有將測試通過當作策略獲利證明。[完整公開前檢查](docs/PUBLIC-REVIEW.md) · [研究方法與限制](docs/RESEARCH.md)
 
@@ -56,9 +58,9 @@ flowchart LR
 
 - React控制台：總覽、策略、資料、風控及帳務，顯示資料新鮮度、阻擋原因及待處理事項。
 - FastAPI提供策略評估、資產配置、資料狀態及紙上交易證據查詢；SQLite可免帳號展示，PostgreSQL供完整服務使用。
-- 官方市場資料擷取、版本化策略、獨立風控、股息／分割／結算及交易成本回放。
+- 官方市場資料擷取、版本化策略、獨立風控；策略台帳處理官方分割與現金配息（[設計](docs/design/ledger-corporate-actions.md)）；研究回放另處理股息／分割／結算及交易成本。
 - 選配Shioaji唯讀帳戶同步及Telegram通知；展示與測試不需要真實帳號。
-- API沒有多人登入或存取權限機制。**只綁本機使用，不能直接暴露到網際網路。** 正式下單設定即使設為true也會被拒絕。
+- API沒有多人登入或存取權限機制。**只綁本機使用，不能直接暴露到網際網路。** 正式下單設定即使設為true也會被拒絕。為了不讓瀏覽器裡的其他網頁操作本機API，只接受`localhost`／`127.0.0.1`的Host；寫入請求必須帶`X-DVL-Client: console`標頭且本文為JSON，否則回403／415。
 
 ## 環境
 
@@ -94,7 +96,7 @@ npm ci
 npm run dev
 ```
 
-開啟控制台 <http://localhost:5173>、API文件 <http://127.0.0.1:8000/docs>。乾淨資料庫沒有帳戶或市場歷史，因此等待資料／`DATA_UNSAFE`是正常結果，不是已完成市場回補。API啟動本身不會啟動scheduler（定期執行資料更新的排程服務）。
+開啟控制台 <http://localhost:5173>、API文件 <http://127.0.0.1:8000/docs>（在API文件頁送出寫入請求前，先按Authorize填入`console`）。乾淨資料庫沒有帳戶或市場歷史，因此等待資料／`DATA_UNSAFE`是正常結果，不是已完成市場回補。API啟動本身不會啟動scheduler（定期執行資料更新的排程服務）。
 
 `evaluate-demo`以虛構指標展示規則；網頁預設顯示真實的「尚無資料」狀態，不假造持倉或回測成果。SQLite檔案由程式建立，已排除於Git之外。
 
@@ -139,6 +141,7 @@ python -m pip wheel --no-deps --no-cache-dir --wheel-dir dist .
 cd frontend
 npm ci
 npm run typecheck
+npm test
 npm run build
 ```
 
@@ -167,7 +170,7 @@ data/templates/    不含真實資料的匯入欄位範本
 
 [研究方法與限制](docs/RESEARCH.md)說明已測路線及無法重現的範圍。公開版提供研究程式與部分彙總證據，不含私人來源擷取及完整研究工作目錄，**無法僅靠公開檔案重建全部歷史實驗**。目前沒有已驗證能在原風險限制下穩定勝過0050的策略。
 
-本專案尚未設定開源授權檔；第三方套件與官方來源的署名保留，不將其視為自有素材。
+程式碼以[MIT授權](LICENSE)釋出；授權範圍不含第三方套件、官方資料來源及其原文，它們的署名與條款各自保留，不將其視為自有素材。
 
 - [文件索引](docs/README.md)
 - [架構名詞與邊界](CONTEXT.md)

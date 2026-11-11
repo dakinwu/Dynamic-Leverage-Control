@@ -45,10 +45,10 @@ class FinMindSupplementalClient:
         if end_date is not None:
             params["end_date"] = end_date.isoformat()
         token = self._token()
-        if token:
-            params["token"] = token
+        # Header, not query string: URLs are written to proxy and access logs.
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(self.endpoint, params=params)
+            response = await client.get(self.endpoint, params=params, headers=headers)
             response.raise_for_status()
             payload = response.json()
         if payload.get("status") != 200:

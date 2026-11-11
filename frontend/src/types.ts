@@ -224,14 +224,20 @@ export type StrategyFillInput = {
   note: string;
 };
 
+export type StrategyLedger = {
+  current_nav: string;
+  cash: string;
+  reconciled: boolean;
+  reconciliation_reason: string | null;
+  /** Dividend action_id -> amount owed since the ex-date (part of NAV). */
+  receivables: Record<string, string>;
+  /** Dividend action_id -> amount credited at payment, awaiting confirmation. */
+  unconfirmed_dividends: Record<string, string>;
+};
+
 export type StrategyFillResult = {
   created: boolean;
-  ledger: {
-    current_nav: string;
-    cash: string;
-    reconciled: boolean;
-    reconciliation_reason: string | null;
-  };
+  ledger: StrategyLedger;
 };
 
 export type PaperIntentResult = {

@@ -2,7 +2,7 @@ name: dynamic-leverage-control
 
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17.10-alpine
     restart: unless-stopped
     environment:
       POSTGRES_DB: dynamic_leverage
@@ -40,7 +40,15 @@ services:
       INITIAL_STRATEGY_NAV: ${INITIAL_STRATEGY_NAV:-500000}
       PRODUCTION_ORDER_SUBMISSION_ENABLED: "false"
     volumes:
-      - "${DVL_SECRET_FILE:-${LOCALAPPDATA:-./config}/dynamic-leverage-2x/secrets/runtime.env}:/run/secrets/runtime.env:ro"
+      # Defaults to the empty template so a bare `docker compose up` never mounts
+      # personal credentials; set DVL_SECRET_FILE (or use scripts/ops/run-local.ps1).
+      # create_host_path: false fails fast instead of creating a directory.
+      - type: bind
+        source: ${DVL_SECRET_FILE:-./config/empty-secrets.env}
+        target: /run/secrets/runtime.env
+        read_only: true
+        bind:
+          create_host_path: false
       - "./data:/app/data:ro"
     ports:
       - "127.0.0.1:8000:8000"
@@ -87,7 +95,15 @@ services:
       TWSE_MARKET_VALUATION_URL: ${TWSE_MARKET_VALUATION_URL:-https://www.twse.com.tw/zh/trading/statistics/index04.html}
       MOPS_MARKET_EPS_URL: ${MOPS_MARKET_EPS_URL:-https://openapi.twse.com.tw/v1/opendata/t187ap14_L}
     volumes:
-      - "${DVL_SECRET_FILE:-${LOCALAPPDATA:-./config}/dynamic-leverage-2x/secrets/runtime.env}:/run/secrets/runtime.env:ro"
+      # Defaults to the empty template so a bare `docker compose up` never mounts
+      # personal credentials; set DVL_SECRET_FILE (or use scripts/ops/run-local.ps1).
+      # create_host_path: false fails fast instead of creating a directory.
+      - type: bind
+        source: ${DVL_SECRET_FILE:-./config/empty-secrets.env}
+        target: /run/secrets/runtime.env
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       postgres:
         condition: service_healthy

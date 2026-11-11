@@ -3,17 +3,26 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, replace
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
 from dynamic_leverage.domain.account import AccountSnapshotReader, BrokerAccountSnapshot
+from dynamic_leverage.domain.corporate_actions import SplitAction
 from dynamic_leverage.domain.ledger import (
     StrategyLedgerState,
     bootstrap_strategy_ledger,
     mark_strategy_ledger,
 )
-from dynamic_leverage.infrastructure.repository import AuditRepository
+from dynamic_leverage.infrastructure.repository import AuditRepository, LedgerWriteConflict
+from dynamic_leverage.services.calendar import TAIPEI_TZ, previous_trading_day
+from dynamic_leverage.services.corporate_actions import distribution_actions, load_split_registry
+from dynamic_leverage.services.ledger import MAX_LEDGER_WRITE_ATTEMPTS
+from dynamic_leverage.services.ledger_actions import (
+    apply_due_corporate_actions,
+    unregistered_ratio_reasons,
+)
 from dynamic_leverage.services.strategy_pipeline import parse_pcf_exposure
 
 ALLOWED_INSTRUMENTS = frozenset({"0050", "00631L", "00685L"})
@@ -61,6 +70,17 @@ def mask_binding(binding: str) -> str:
     return f"{broker_id}-***{account_id[-4:]}"
 
 
+# Both allowed leveraged funds are daily 2x products; a PCF reading outside this
+# band is a parsing or data defect, so the exposure is treated as unknown.
+TWO_X_PCF_EXPOSURE_BAND = (Decimal("1.8"), Decimal("2.3"))
+
+
+def _pcf_is_current(trade_date: date, observed_at: datetime) -> bool:
+    """The PCF must describe the account date or the session just before it."""
+    account_date = observed_at.astimezone(TAIPEI_TZ).date()
+    return previous_trading_day(account_date) <= trade_date <= account_date
+
+
 def _actual_exposure(
     snapshot: BrokerAccountSnapshot,
     repository: AuditRepository,
@@ -81,10 +101,14 @@ def _actual_exposure(
                     else "market.capital_00685l_pcf.official"
                 )
             )
-            multiple = parse_pcf_exposure([record], position.instrument) if record else None
-            if multiple is None:
+            pcf = parse_pcf_exposure([record], position.instrument) if record else None
+            if pcf is None:
                 return None, None, "official-etf-exposure-required"
-            numerator += position.market_value * multiple
+            if not TWO_X_PCF_EXPOSURE_BAND[0] <= pcf.exposure <= TWO_X_PCF_EXPOSURE_BAND[1]:
+                return None, None, "pcf-exposure-out-of-range"
+            if not _pcf_is_current(pcf.trade_date, snapshot.observed_at):
+                return None, None, "pcf-stale"
+            numerator += position.market_value * pcf.exposure
     return numerator / strategy_nav, numerator / snapshot.nav, "authoritative-pcf"
 
 
@@ -138,15 +162,26 @@ def _event_payload(state: StrategyLedgerState) -> dict[str, object]:
     }
 
 
-def _reconcile_strategy_ledger(
+def _reconcile_strategy_ledger(**kwargs) -> StrategyLedgerState:
+    """Reconcile, re-reading and retrying if a fill commits between read and write."""
+    for _attempt in range(MAX_LEDGER_WRITE_ATTEMPTS):
+        try:
+            return _reconcile_strategy_ledger_once(**kwargs)
+        except LedgerWriteConflict:
+            continue
+    raise LedgerWriteConflict("strategy ledger kept changing during account sync")
+
+
+def _reconcile_strategy_ledger_once(
     *,
     repository: AuditRepository,
     snapshot: BrokerAccountSnapshot,
     account_snapshot_id: str,
     capital_budget: Decimal,
     position_structure_break: bool,
+    splits: tuple[SplitAction, ...],
 ) -> StrategyLedgerState:
-    current = repository.get_strategy_ledger_state()
+    current = repository.get_strategy_ledger_state(refresh=True)
     revision = current.position_revision if current is not None else 0
     leveraged_instruments = sorted(
         {
@@ -173,6 +208,7 @@ def _reconcile_strategy_ledger(
         return current
 
     positions, prices = _strategy_positions(snapshot)
+    corporate_events = []
     if current is None:
         if position_structure_break:
             raise ValueError("cannot initialize strategy ledger from unsupported account positions")
@@ -197,13 +233,44 @@ def _reconcile_strategy_ledger(
         )
         event_type = "RECONCILIATION_BREAK"
     else:
-        updated = mark_strategy_ledger(
+        # Corporate actions first, so the mark compares like-for-like units.
+        dividends, _problems = distribution_actions(
+            repository,
+            sorted(ALLOWED_INSTRUMENTS),
+            today=snapshot.observed_at.astimezone(TAIPEI_TZ).date(),
+        )
+        adjusted, corporate_events, corporate_breaks = apply_due_corporate_actions(
+            repository,
             current,
+            at=snapshot.observed_at,
+            broker_positions=positions,
+            splits=splits,
+            dividends=dividends,
+        )
+        updated = mark_strategy_ledger(
+            adjusted,
             positions=positions,
             prices=prices,
             observed_at=snapshot.observed_at,
             account_snapshot_id=account_snapshot_id,
         )
+        breaks = list(corporate_breaks)
+        if not updated.reconciled and str(updated.reconciliation_reason).startswith(
+            "unrecorded-position-change"
+        ):
+            breaks += unregistered_ratio_reasons(adjusted.positions, positions)
+        if breaks:
+            reasons = [*breaks]
+            if not updated.reconciled and updated.reconciliation_reason:
+                reasons.append(updated.reconciliation_reason)
+            updated = replace(
+                updated,
+                reconciled=False,
+                reconciliation_reason="; ".join(reasons),
+                actual_exposure=None,
+                account_exposure=None,
+                exposure_quality="reconciliation-break",
+            )
         event_type = "MARK" if updated.reconciled else "RECONCILIATION_BREAK"
 
     if updated.reconciled:
@@ -219,7 +286,15 @@ def _reconcile_strategy_ledger(
             exposure_quality=exposure_quality,
         )
 
-    repository.save_strategy_ledger_state(updated)
+    repository.save_strategy_ledger_state(updated, expected=current)
+    for pending in corporate_events:
+        repository.append_strategy_ledger_event(
+            event_key=pending.event_key,
+            event_type=pending.event_type,
+            occurred_at=snapshot.observed_at,
+            account_snapshot_id=account_snapshot_id,
+            payload={**pending.payload, "state_after": _event_payload(updated)},
+        )
     repository.append_strategy_ledger_event(
         event_key=event_key,
         event_type=event_type,
@@ -236,6 +311,7 @@ def sync_account_snapshot(
     *,
     binding: str,
     capital_budget: Decimal | None = None,
+    splits: tuple[SplitAction, ...] | None = None,
 ) -> AccountSyncResult:
     account_masked = mask_binding(binding)
     fingerprint = binding_fingerprint(binding)
@@ -309,6 +385,7 @@ def sync_account_snapshot(
         account_snapshot_id=row.snapshot_id,
         capital_budget=capital_budget if capital_budget is not None else snapshot.nav,
         position_structure_break=position_structure_break,
+        splits=load_split_registry() if splits is None else splits,
     )
     quality = raw_quality if ledger.reconciled else "reconciliation-break"
     return AccountSyncResult(

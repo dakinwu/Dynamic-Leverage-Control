@@ -37,7 +37,6 @@ class Settings(BaseSettings):
     auto_create_schema: bool = True
     shioaji_mode: str = "readonly"
     shioaji_secret_file: Path | None = None
-    shioaji_ca_path: Path | None = None
     shioaji_account_id: str | None = None
     telegram_secret_file: Path | None = None
     finmind_token_file: Path | None = None
@@ -57,8 +56,10 @@ class Settings(BaseSettings):
                 self.shioaji_account_id = binding
         if self.production_order_submission_enabled:
             raise ValueError("production order submission is not available in the MVP")
-        if self.shioaji_mode not in {"disabled", "readonly", "simulation"}:
-            raise ValueError("SHIOAJI_MODE must be disabled, readonly, or simulation")
+        # No Shioaji simulation environment is implemented; the only broker
+        # access is production read-only, so only these two modes exist.
+        if self.shioaji_mode not in {"disabled", "readonly"}:
+            raise ValueError("SHIOAJI_MODE must be disabled or readonly")
 
 
 @lru_cache

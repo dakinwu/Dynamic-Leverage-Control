@@ -31,6 +31,9 @@ from dynamic_leverage.services.research_evidence import REFERENCE, research_evid
 TZ = ZoneInfo("Asia/Taipei")
 
 
+CONSOLE = {"base_url": "http://localhost", "headers": {"X-DVL-Client": "console"}}
+
+
 @pytest.mark.parametrize(
     "now, expected",
     [
@@ -149,7 +152,7 @@ def test_gets_are_read_only_even_on_empty_database(monkeypatch):
     settings = Settings(app_env="test", database_url="sqlite:///:memory:", auto_create_schema=True)
     app = create_app(settings)
     writes = []
-    with TestClient(app) as client:
+    with TestClient(app, **CONSOLE) as client:
 
         def inspect(_conn, _cursor, statement, _params, _context, _many):
             if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")):

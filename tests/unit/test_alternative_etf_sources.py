@@ -8,7 +8,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def module(name):
-    spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / f"{name}.py")
+    spec = importlib.util.spec_from_file_location(
+        name, ROOT / "scripts" / "research" / f"{name}.py"
+    )
     result = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(result)
     return result
