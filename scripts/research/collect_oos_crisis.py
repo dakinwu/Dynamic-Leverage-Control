@@ -25,7 +25,6 @@ ROOT = Path(__file__).resolve().parents[2]
 CACHE = ROOT / "data/private/oos-crisis-20260921"
 
 
-
 def parse_archive(body):
     """Legacy research layout has an explicit all-listed-stocks row, not an average."""
     try:
@@ -96,8 +95,7 @@ def collect(probe=False, old_valuations=False):
                 f"taiex-{month}.json",
                 "index",
                 month,
-                "https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST"
-                f"?date={month}01&response=json",
+                f"https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST?date={month}01&response=json",
             )
         )
     pe_months = (
@@ -124,7 +122,7 @@ def collect(probe=False, old_valuations=False):
                     f"tw50-{month}.json",
                     "index",
                     month,
-                    "https://www.twse.com.tw/rwd/zh/FTSE/TAI50I" f"?date={month}01&response=json",
+                    f"https://www.twse.com.tw/rwd/zh/FTSE/TAI50I?date={month}01&response=json",
                 )
             )
     if not probe and not old_valuations:
@@ -133,7 +131,7 @@ def collect(probe=False, old_valuations=False):
                 "taiex-202609.json",
                 "index",
                 "202609",
-                "https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST" "?date=20260901&response=json",
+                "https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST?date=20260901&response=json",
             )
         )
         for stock in ["0050", "00631L"]:

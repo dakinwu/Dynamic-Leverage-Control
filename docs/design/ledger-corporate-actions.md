@@ -90,13 +90,13 @@
 | `services/account_replay.py` | 同上，並同步調整掛單股數 | 同上 | `max(20, 金額×0.001425)`，**不取整** |
 | `services/historical_study.py` | 總報酬指數乘以比例 | 除息日以收盤價**立即再投入** | 無 |
 | `services/return_attribution.py` | `split × (收盤 + 配息) / 前收 − 1` | 同左 | 無 |
-| `domain/paper.py` | 無 | 無 | 手續費與稅**四捨五入到整數元**，最低 20 元 |
+| `domain/paper.py`（已刪除，沒有執行中的使用者） | 無 | 無 | 手續費與稅**四捨五入到整數元**，最低 20 元 |
 | `domain/backtest.py` | 無 | 無 | 單邊費率，沒有最低手續費與證交稅 |
 
 **建議：部分整併。**
 
-- 新增 `domain/corporate_actions.py`，提供純函式與資料型別：`CorporateAction`、`apply_split(units, ratio)`（非整數時報錯）、`dividend_entitlement(units, amount)`、`units_held_at(positions, fills, day)`，以及登記檔載入器。**實際帳本與 `domain/paper.py` 改用這個模組。**
-- 費用以 `domain/paper.FeeSchedule`（取整到整數元）作為正式路徑唯一來源；帳本對帳時可用它檢查補登成交的手續費是否合理。
+- 新增 `domain/corporate_actions.py`，提供純函式與資料型別：`CorporateAction`、`apply_split(units, ratio)`（非整數時報錯）、`dividend_entitlement(units, amount)`、`units_held_at(positions, fills, day)`，以及登記檔載入器。**實際帳本改用這個模組。**
+- 原提議以 `domain/paper.FeeSchedule` 作為正式路徑的費用來源；實作時帳本沒有採用，`domain/paper.py` 也因沒有執行中的使用者而刪除。帳本目前直接記錄成交回報上的手續費與稅，不另行推算。
 - **研究模組這次不改。** 它們的語意不完全一致：配息有應收和立即再投入兩種，費用有取整和不取整兩種。而且 `reference/rearm-results.json` 記錄的歸檔結果依賴這些程式在當時的實作，改了就會讓歸檔結果與程式不再對應。要整併的話，應另開一個研究版本，重跑並比較差異。
 
 ## 8. 風控與介面影響

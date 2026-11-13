@@ -13,7 +13,6 @@ from dynamic_leverage.services.fundamental_signal import SourceObservation
 ROOT = Path(__file__).resolve().parents[2]
 
 
-
 def run(capture: Path, output: Path):
     if output.exists():
         raise FileExistsError("use a new inventory path")

@@ -12,7 +12,6 @@ from dynamic_leverage.services.research_registry import build_registry
 ROOT = Path(__file__).resolve().parents[2]
 
 
-
 def run(root: Path, check: bool):
     registry = build_registry(root)
     path = root / "docs/research/experiment-registry.json"

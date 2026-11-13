@@ -21,7 +21,6 @@ from dynamic_leverage.services.research_artifacts import (
 ROOT = Path(__file__).resolve().parents[2]
 
 
-
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 

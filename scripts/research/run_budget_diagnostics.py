@@ -27,7 +27,6 @@ from dynamic_leverage.services.research_artifacts import (
 ROOT = Path(__file__).resolve().parents[2]
 
 
-
 def metrics(result, initial):
     points = [
         EquityPoint(r["date"], r["nav"], r["daily_return"], r["actual_exposure"], D(0), r["cost"])

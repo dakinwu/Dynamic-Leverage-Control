@@ -550,8 +550,7 @@ def render(report, main_results):
         "- 最大回撤包含初始成本，從資產歷史高點計算；持有期間報酬與高點損失是不同指標。",
         "- 本報告不含完整帳戶 RiskGate 回放；40% 門檻在系統中是只允許減碼的條件，"
         "不是觸及後保證以該價格清倉。本次績效不得當作完整系統執行結果。",
-        "- 尚缺必要證據，維持 historical_research_ready=false、"
-        "profitability_demonstrated=false。",
+        "- 尚缺必要證據，維持 historical_research_ready=false、profitability_demonstrated=false。",
         "",
         "## 資料驗收",
         "",
