@@ -12,6 +12,8 @@ from dynamic_leverage.domain.account import (
     BrokerSettlement,
 )
 
+CONSOLE = {"base_url": "http://localhost", "headers": {"X-DVL-Client": "console"}}
+
 
 class FakeAccountReader:
     def read_account(self, binding: str) -> BrokerAccountSnapshot:
@@ -45,7 +47,7 @@ def _client() -> TestClient:
         database_url="sqlite+pysqlite:///:memory:",
         auto_create_schema=True,
     )
-    return TestClient(create_app(settings))
+    return TestClient(create_app(settings), **CONSOLE)
 
 
 def test_system_status_proves_production_orders_are_disabled() -> None:
@@ -73,14 +75,14 @@ def test_system_status_survives_transient_secret_mount_io_error(
         raise OSError(5, "simulated bind mount I/O error")
 
     monkeypatch.setattr(Path, "exists", raise_io_error)
-    with TestClient(app) as client:
+    with TestClient(app, **CONSOLE) as client:
         response = client.get("/api/v1/system")
 
     assert response.status_code == 200
     assert response.json()["shioaji_secret_present"] is False
 
 
-def test_strategy_evaluation_is_persisted_for_dashboard() -> None:
+def test_manual_strategy_evaluation_is_audited_but_not_a_dashboard_target() -> None:
     with _client() as client:
         response = client.post(
             "/api/v1/strategies/evaluate",
@@ -92,8 +94,11 @@ def test_strategy_evaluation_is_persisted_for_dashboard() -> None:
         )
         assert response.status_code == 200
         dashboard = client.get("/api/v1/dashboard")
+        history = client.get("/api/v1/strategies/constant-1.2-v1/runs")
     assert dashboard.status_code == 200
-    assert dashboard.json()["strategies"][0]["target_exposure"] == "1.200"
+    assert dashboard.json()["strategies"] == []
+    assert history.status_code == 200
+    assert history.json()[0]["target_exposure"] == "1.200"
 
 
 def test_constant_strategy_selection_materializes_immediate_target() -> None:
@@ -160,7 +165,7 @@ def test_read_only_account_sync_becomes_observed_account_state(tmp_path: Path) -
     )
     app = create_app(settings, account_reader_factory=lambda _path: FakeAccountReader())
 
-    with TestClient(app) as client:
+    with TestClient(app, **CONSOLE) as client:
         sync = client.post("/api/v1/account/sync")
         summary = client.get("/api/v1/operations/summary")
 
@@ -205,7 +210,7 @@ def test_actual_fill_is_audited_and_requires_broker_reconciliation(tmp_path: Pat
         "occurred_at": "2026-08-31T14:00:00+08:00",
         "note": "operator confirmed broker fill",
     }
-    with TestClient(app) as client:
+    with TestClient(app, **CONSOLE) as client:
         assert client.post("/api/v1/account/sync").status_code == 200
         recorded = client.post("/api/v1/strategy-ledger/fills", json=fill)
         duplicate = client.post("/api/v1/strategy-ledger/fills", json=fill)
@@ -317,3 +322,128 @@ def test_paper_intent_creates_evidence_chain_without_broker_order() -> None:
         ]
         evidence = client.get(f"/api/v1/paper/evidence/{payload['run_id']}")
         assert evidence.status_code == 200
+
+
+def test_paper_intent_above_cash_ceiling_is_recorded_as_blocked() -> None:
+    with _client() as client:
+        response = client.post(
+            "/api/v1/paper/intents",
+            json={
+                "strategy_version": "dvl-tw-v2-shadow",
+                "current_exposure": "1.0",
+                "requested_exposure": "3.2",
+                "reason": "v2 shadow candidate above the cash ceiling",
+            },
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["approved"] is False
+        assert payload["allocations"] == []
+        risk = next(item for item in payload["evidence"] if item["kind"] == "risk_decision")
+        assert "EXPOSURE_CEILING" in risk["payload"]["reason_codes"]
+        assert risk["payload"]["requested_exposure"] == "3.2"
+
+
+def test_paper_intent_rejects_exposure_above_v2_candidate_ceiling() -> None:
+    with _client() as client:
+        response = client.post(
+            "/api/v1/paper/intents",
+            json={
+                "strategy_version": "dvl-tw-v2-shadow",
+                "current_exposure": "1.0",
+                "requested_exposure": "3.3",
+                "reason": "beyond any strategy target",
+            },
+        )
+    assert response.status_code == 422
+
+
+def test_paper_intent_increase_is_blocked_without_fresh_inputs_or_strategy_run() -> None:
+    # A fresh database has no verified market data and no strategy evaluation.
+    with _client() as client:
+        response = client.post(
+            "/api/v1/paper/intents",
+            json={
+                "strategy_version": "constant-1.2-v1",
+                "current_exposure": "1.0",
+                "requested_exposure": "1.2",
+                "reason": "increase on empty inputs",
+            },
+        )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["approved"] is False
+    risk = next(item for item in payload["evidence"] if item["kind"] == "risk_decision")
+    # The Risk Gate reports its first blocker (no reconciled broker account);
+    # the stale inputs remain in the evidence. DATA_UNSAFE with a reconciled
+    # account is covered in test_risk_unification.py.
+    assert "BROKER_UNSAFE" in risk["payload"]["reason_codes"]
+    assert "STRATEGY_UNEVALUATED" in risk["payload"]["reason_codes"]
+    assert risk["payload"]["stale_required_contracts"]
+
+
+def _ledger_app(tmp_path: Path):
+    secret_file = tmp_path / "runtime.env"
+    secret_file.write_text("SJ_API_KEY=key\nSJ_SECRET_KEY=secret\n", encoding="utf-8")
+    settings = Settings(
+        app_env="test",
+        database_url="sqlite+pysqlite:///:memory:",
+        auto_create_schema=True,
+        shioaji_mode="readonly",
+        shioaji_secret_file=secret_file,
+        shioaji_account_id="9A00-1234567",
+    )
+    return create_app(settings, account_reader_factory=lambda _path: FakeAccountReader())
+
+
+LEDGER_FILL = {
+    "execution_id": "broker-fill-001",
+    "instrument": "0050",
+    "side": "BUY",
+    "quantity": "100",
+    "price": "50",
+    "commission": "100",
+    "tax": "0",
+    "occurred_at": "2026-08-31T14:00:00+08:00",
+    "note": "operator confirmed broker fill",
+}
+
+
+def test_fill_replay_with_different_details_is_a_conflict(tmp_path: Path) -> None:
+    with TestClient(_ledger_app(tmp_path), **CONSOLE) as client:
+        assert client.post("/api/v1/account/sync").status_code == 200
+        assert client.post("/api/v1/strategy-ledger/fills", json=LEDGER_FILL).status_code == 200
+        changed = client.post(
+            "/api/v1/strategy-ledger/fills", json={**LEDGER_FILL, "quantity": "200"}
+        )
+        ledger = client.get("/api/v1/strategy-ledger")
+
+    assert changed.status_code == 409
+    assert ledger.json()["position_revision"] == 1
+
+
+def test_fill_insert_race_returns_the_idempotent_result(tmp_path: Path, monkeypatch) -> None:
+    from dynamic_leverage.infrastructure.repository import AuditRepository
+
+    real_lookup = AuditRepository.strategy_ledger_event
+    hidden = {"calls": 0}
+
+    def lookup_missing_during_race(self, event_key):
+        # Model a concurrent writer whose insert lands between our existence
+        # checks and our own insert: the first two lookups miss it.
+        if event_key.startswith("FILL:") and hidden["calls"] < 2:
+            hidden["calls"] += 1
+            return None
+        return real_lookup(self, event_key)
+
+    with TestClient(_ledger_app(tmp_path), **CONSOLE) as client:
+        assert client.post("/api/v1/account/sync").status_code == 200
+        assert client.post("/api/v1/strategy-ledger/fills", json=LEDGER_FILL).status_code == 200
+        monkeypatch.setattr(AuditRepository, "strategy_ledger_event", lookup_missing_during_race)
+        raced = client.post("/api/v1/strategy-ledger/fills", json=LEDGER_FILL)
+        monkeypatch.undo()
+        ledger = client.get("/api/v1/strategy-ledger")
+
+    assert raced.status_code == 200
+    assert raced.json()["created"] is False
+    assert ledger.json()["position_revision"] == 1

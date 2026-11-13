@@ -31,6 +31,9 @@ from dynamic_leverage.services.research_evidence import REFERENCE, research_evid
 TZ = ZoneInfo("Asia/Taipei")
 
 
+CONSOLE = {"base_url": "http://localhost", "headers": {"X-DVL-Client": "console"}}
+
+
 @pytest.mark.parametrize(
     "now, expected",
     [
@@ -149,7 +152,7 @@ def test_gets_are_read_only_even_on_empty_database(monkeypatch):
     settings = Settings(app_env="test", database_url="sqlite:///:memory:", auto_create_schema=True)
     app = create_app(settings)
     writes = []
-    with TestClient(app) as client:
+    with TestClient(app, **CONSOLE) as client:
 
         def inspect(_conn, _cursor, statement, _params, _context, _many):
             if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")):
@@ -211,6 +214,16 @@ def test_archived_failure_is_not_runtime_qualification_and_tampering_invalidates
         shutil.copy2(p, tmp_path / p.name)
     (tmp_path / "rearm-results.json").write_text("{}", encoding="utf-8")
     assert research_evidence("drawdown-budget:rearm", root=tmp_path)["records"] == []
+
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
+def test_research_evidence_fingerprint_ignores_checkout_line_endings(tmp_path, newline):
+    # git autocrlf rewrites text files per platform; the fingerprint pins content.
+    for p in REFERENCE.glob("*"):
+        body = p.read_bytes().replace(b"\r\n", b"\n")
+        (tmp_path / p.name).write_bytes(body.replace(b"\n", newline))
+    evidence = research_evidence("dvl-tw-v2-shadow", root=tmp_path)
+    assert evidence["evidence_status"] == "verified-archive"
 
 
 def test_changed_configuration_never_inherits_research_qualification(tmp_path):

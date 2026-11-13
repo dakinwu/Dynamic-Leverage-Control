@@ -291,6 +291,8 @@ class FreshnessStatusSchema(BaseModel):
     expected_trade_date: date | None = None
     received_at: datetime | None = None
     published_at: datetime | None = None
+    # Whether a non-FRESH status blocks exposure increases (FreshnessContract.required).
+    required: bool = True
 
 
 class AutomationStatusSchema(BaseModel):
@@ -344,7 +346,9 @@ class PaperIntentRequest(BaseModel):
     strategy_version: str
     recipe: str = "1x-2x-v1"
     current_exposure: Decimal = Field(ge=0)
-    requested_exposure: Decimal = Field(ge=0, le=2)
+    # Accept up to the v2 shadow candidate ceiling so above-cash targets are
+    # recorded and blocked as EXPOSURE_CEILING instead of rejected as 422.
+    requested_exposure: Decimal = Field(ge=0, le=Decimal("3.2"))
     reason: str = Field(min_length=1, max_length=500)
 
 
@@ -417,8 +421,17 @@ class StrategyLedgerStateSchema(BaseModel):
     actual_exposure: Decimal | None
     account_exposure: Decimal | None
     exposure_quality: str
+    # Dividend action_id -> amount owed since the ex-date (included in NAV).
+    receivables: dict[str, Decimal] = Field(default_factory=dict)
+    # Dividend action_id -> amount credited at payment, awaiting operator confirmation.
+    unconfirmed_dividends: dict[str, Decimal] = Field(default_factory=dict)
 
 
 class StrategyFillResponse(BaseModel):
     created: bool
     ledger: StrategyLedgerStateSchema
+
+
+class DividendConfirmationRequest(BaseModel):
+    received_amount: Decimal = Field(ge=0)
+    note: str = Field(default="", max_length=500)

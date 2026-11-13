@@ -3,18 +3,20 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Security
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.security import APIKeyHeader
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from dynamic_leverage.api.schemas import (
@@ -29,6 +31,7 @@ from dynamic_leverage.api.schemas import (
     DashboardResponse,
     DashboardSnapshotSchema,
     DashboardStrategySchema,
+    DividendConfirmationRequest,
     FreshnessStatusSchema,
     ManualHaltRequest,
     ManualHaltSchema,
@@ -55,7 +58,7 @@ from dynamic_leverage.domain.account import AccountSnapshotReader
 from dynamic_leverage.domain.backtest import BacktestEngine, BacktestPoint
 from dynamic_leverage.domain.execution import Allocation, OneXTwoXRecipe, TwoXCashRecipe
 from dynamic_leverage.domain.models import PolicyState, StrategyInputs
-from dynamic_leverage.domain.risk import RiskContext, RiskGate
+from dynamic_leverage.domain.risk import RiskGate
 from dynamic_leverage.domain.strategies import (
     ConstantExposurePolicy,
     DvlV2Policy,
@@ -68,7 +71,11 @@ from dynamic_leverage.infrastructure.brokers.shioaji import (
     load_credentials,
 )
 from dynamic_leverage.infrastructure.database import Base, make_engine, make_session_factory
-from dynamic_leverage.infrastructure.repository import AuditRepository
+from dynamic_leverage.infrastructure.repository import (
+    MANUAL_EVALUATION_TRIGGER,
+    AuditRepository,
+    LedgerWriteConflict,
+)
 from dynamic_leverage.infrastructure.tables import (  # noqa: F401
     AutomationStatusRecord,
     BrokerEventRecord,
@@ -86,6 +93,7 @@ from dynamic_leverage.infrastructure.tables import (  # noqa: F401
     StrategySelectionRecord,
     TradeIntentRecord,
 )
+from dynamic_leverage.services import notifications
 from dynamic_leverage.services.account_sync import (
     mask_binding,
     sync_account_snapshot,
@@ -93,26 +101,93 @@ from dynamic_leverage.services.account_sync import (
 from dynamic_leverage.services.freshness import (
     freshness_rows as _freshness_rows,
 )
-from dynamic_leverage.services.ledger import record_strategy_fill
-from dynamic_leverage.services.notifications import TelegramNotifier
-from dynamic_leverage.services.operations_projection import build_operations
+from dynamic_leverage.services.ledger import confirm_dividend_payment, record_strategy_fill
+from dynamic_leverage.services.operations_projection import (
+    OUTBOX_PENDING,
+    build_operations,
+    dispatch_notifications,
+    enqueue_notification,
+)
 from dynamic_leverage.services.operations_projection import queue_payload as _queue_payload
 from dynamic_leverage.services.research_evidence import REFERENCE, research_evidence
+from dynamic_leverage.services.risk_context import (
+    ClientRiskClaims,
+    gate_allows_target,
+    server_risk_state,
+)
+from dynamic_leverage.services.risk_context import evaluate_risk as evaluate_risk_context
 
 
-def get_session(request: Request):
+def _send_telegram(path: Path | None, message: str) -> bool:
+    # Resolved at call time so tests and the runtime share one replaceable sender.
+    return notifications.send_telegram_message(path, message)
+
+
+def get_session(request: Request, background_tasks: BackgroundTasks):
+    """Commit before the response is sent; deliver staged notifications afterwards.
+
+    Used with ``scope="function"`` so a failed commit surfaces as a 5xx instead
+    of following an already-sent 200. Outbox rows commit atomically with the
+    state they describe, and delivery only ever reads committed rows.
+    """
     session = request.app.state.session_factory()
     try:
         yield session
         session.commit()
+        notifications_staged = session.info.pop(OUTBOX_PENDING, False)
     except Exception:
         session.rollback()
         raise
     finally:
         session.close()
+    if notifications_staged:
+        background_tasks.add_task(
+            dispatch_notifications,
+            request.app.state.session_factory,
+            request.app.state.telegram_secret_file,
+            sender=_send_telegram,
+        )
 
 
-SessionDependency = Annotated[Session, Depends(get_session)]
+SessionDependency = Annotated[Session, Depends(get_session, scope="function")]
+
+# The API has no authentication and is local-only. These guards stop another
+# web page in the operator's browser from driving it: a foreign Host header
+# (DNS rebinding) is refused, and every state-changing request must carry a
+# custom header, which a cross-site page cannot send without a CORS preflight
+# that only WEB_ORIGIN passes, plus a JSON body (no form or text/plain posts).
+LOCAL_HOSTS = ["localhost", "127.0.0.1"]
+CONSOLE_HEADER = "X-DVL-Client"
+CONSOLE_HEADER_VALUE = "console"
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+# Documentation only (enforcement is the middleware): lets Swagger UI at /docs
+# send the header after "Authorize" with the value "console".
+_console_header_scheme = APIKeyHeader(
+    name=CONSOLE_HEADER,
+    auto_error=False,
+    description=f"Local console marker; use the value '{CONSOLE_HEADER_VALUE}'.",
+)
+
+
+async def _require_console_json(request: Request, call_next):
+    if request.method not in _SAFE_METHODS:
+        if request.headers.get(CONSOLE_HEADER) != CONSOLE_HEADER_VALUE:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": f"missing {CONSOLE_HEADER} header"},
+            )
+        content_type = request.headers.get("content-type", "")
+        media_type = content_type.split(";", 1)[0].strip().lower()
+        has_body = request.headers.get("content-length", "0") != "0" or (
+            "transfer-encoding" in request.headers
+        )
+        if (content_type or has_body) and media_type != "application/json":
+            return JSONResponse(
+                status_code=415,
+                content={"detail": "request body must be application/json"},
+            )
+    return await call_next(request)
+
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
@@ -165,7 +240,6 @@ def create_app(
     )
     engine = make_engine(runtime_settings.database_url)
     session_factory = make_session_factory(engine)
-    telegram = TelegramNotifier(runtime_settings.telegram_secret_file)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -173,6 +247,7 @@ def create_app(
             Base.metadata.create_all(engine)
         app.state.engine = engine
         app.state.session_factory = session_factory
+        app.state.telegram_secret_file = runtime_settings.telegram_secret_file
         yield
         engine.dispose()
 
@@ -180,17 +255,26 @@ def create_app(
         title="Dynamic Leverage Control",
         version="0.1.0",
         lifespan=lifespan,
+        dependencies=[Security(_console_header_scheme)],
     )
+    # Starlette runs the last-added middleware first: Host check, then CORS
+    # (so guard rejections stay readable by the console), then the POST guard.
+    app.middleware("http")(_require_console_json)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[runtime_settings.web_origin],
         allow_credentials=False,
         allow_methods=["GET", "POST"],
-        allow_headers=["Content-Type"],
+        allow_headers=["Content-Type", CONSOLE_HEADER],
     )
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=LOCAL_HOSTS)
 
-    @app.get("/api/v1/system", response_model=SystemStatusResponse)
-    def system_status(session: SessionDependency) -> SystemStatusResponse:
+    @app.get(
+        "/api/v1/system",
+        response_model=SystemStatusResponse,
+        responses={503: {"model": SystemStatusResponse, "description": "database unavailable"}},
+    )
+    def system_status(session: SessionDependency) -> SystemStatusResponse | JSONResponse:
         database = "ok"
         try:
             session.execute(text("SELECT 1"))
@@ -204,7 +288,7 @@ def create_app(
                     secret_present = True
             except (OSError, ValueError):
                 secret_present = False
-        return SystemStatusResponse(
+        status = SystemStatusResponse(
             status="ok" if database == "ok" else "degraded",
             environment=runtime_settings.app_env,
             database=database,
@@ -213,6 +297,11 @@ def create_app(
             shioaji_secret_present=secret_present,
             eligibility_gate="closed",
         )
+        if database != "ok":
+            # Health checks and monitors must see the outage, not a 200.
+            session.rollback()
+            return JSONResponse(status_code=503, content=status.model_dump(mode="json"))
+        return status
 
     @app.get("/api/v1/dashboard", response_model=DashboardResponse)
     def dashboard(session: SessionDependency) -> DashboardResponse:
@@ -347,9 +436,9 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if row is None:
             raise HTTPException(status_code=404, detail="queue item not found")
-        telegram.notify_state(
+        enqueue_notification(
+            session,
             f"queue:{row.item_id}",
-            row.status,
             (
                 f"DVL Operator Queue {row.status}\n{row.title}\n"
                 f"處理人：{payload.actor}\n原因：{payload.reason}"
@@ -374,9 +463,9 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if row is None:
             raise HTTPException(status_code=404, detail="queue item not found")
-        telegram.notify_state(
+        enqueue_notification(
+            session,
             f"queue:{row.item_id}",
-            row.status,
             (
                 f"DVL Operator Queue {row.status}\n{row.title}\n"
                 f"處理人：{payload.actor}\n原因：{payload.reason}"
@@ -418,10 +507,11 @@ def create_app(
             reason=payload.reason,
         )
         if not was_active:
-            telegram.notify_state(
+            enqueue_notification(
+                session,
                 "manual_halt",
-                "ACTIVE",
                 f"DVL Manual Halt 已啟用\n原因：{payload.reason}\n操作者：{payload.actor}",
+                state="ACTIVE",
             )
         return ManualHaltSchema(
             active=row.active,
@@ -445,10 +535,11 @@ def create_app(
             reason=payload.reason,
         )
         if was_active:
-            telegram.notify_state(
+            enqueue_notification(
+                session,
                 "manual_halt",
-                "RELEASED",
                 f"DVL Manual Halt 已解除\n原因：{payload.reason}\n操作者：{payload.actor}",
+                state="RELEASED",
             )
         return ManualHaltSchema(
             active=row.active,
@@ -541,30 +632,23 @@ def create_app(
     ) -> PaperIntentResponse:
         _strategy(payload.strategy_version)
         recipe = _recipe(payload.recipe)
-        allocations = recipe.allocate(payload.requested_exposure)
+        # Targets above the cash ceiling have no executable recipe; the intent is
+        # still recorded so the EXPOSURE_CEILING block leaves an audit trail.
+        allocations = (
+            recipe.allocate(payload.requested_exposure)
+            if payload.requested_exposure <= RiskGate.exposure_ceiling
+            else ()
+        )
         repository = AuditRepository(session)
-        halt = repository.get_manual_halt()
-        ledger = repository.get_strategy_ledger_state()
-        freshness = _freshness_rows(repository)
-        stale_required = [
-            item.contract_key
-            for item in freshness
-            if item.status != "FRESH" and item.contract_key != "capital_00685l_pcf"
-        ]
-        account_snapshot = repository.latest_raw_snapshot(kind="broker.account.shioaji")
-        account_truth_present = (
-            bool(runtime_settings.shioaji_account_id)
-            and account_snapshot is not None
-            and account_snapshot.quality not in {"error", "unknown"}
-            and ledger is not None
-            and ledger.reconciled
-            and ledger.actual_exposure is not None
+        server = server_risk_state(
+            repository, runtime_settings, strategy_version=payload.strategy_version
         )
-        effective_current_exposure = (
-            ledger.actual_exposure
-            if ledger is not None and ledger.actual_exposure is not None
-            else payload.current_exposure
+        decision, context = evaluate_risk_context(
+            server,
+            requested_exposure=payload.requested_exposure,
+            submitted_actual_exposure=payload.current_exposure,
         )
+        effective_current_exposure = context.actual_exposure
         run_id = str(uuid4())
         evidence: list[PaperEvidenceRecord] = []
         strategy_record = repository.latest_strategy_decision(payload.strategy_version)
@@ -582,36 +666,28 @@ def create_app(
             )
         )
         increase_requested = payload.requested_exposure > effective_current_exposure
+        # Paper-only checks, then the shared Risk Gate verdict (first blocking
+        # reason plus its safety state, e.g. RISK_REDUCING_ONLY + DATA_UNSAFE).
         reason_codes = ["PAPER_ONLY"]
-        if halt.active:
-            reason_codes.append("MANUAL_HALT")
-        if payload.requested_exposure > Decimal("2.0"):
+        if payload.requested_exposure > RiskGate.exposure_ceiling:
             reason_codes.append("EXPOSURE_CEILING")
-        if increase_requested and stale_required:
-            reason_codes.append("DATA_UNSAFE")
         if increase_requested and (strategy_record is None or not strategy_record.valid):
             reason_codes.append("STRATEGY_UNEVALUATED")
-        if not account_truth_present:
-            reason_codes.append("BROKER_UNSAFE")
-        capital_loss_limit_breached = bool(
-            ledger
-            and (
-                ledger.principal_loss_ratio >= Decimal("0.40")
-                or ledger.maximum_drawdown >= Decimal("0.40")
-            )
-        )
-        if capital_loss_limit_breached and payload.requested_exposure >= effective_current_exposure:
-            reason_codes.append("CAPITAL_LOSS_LIMIT")
+        if not gate_allows_target(decision, payload.requested_exposure):
+            for code in (*decision.reason_codes, decision.safety_state.value):
+                if code not in reason_codes and code != "NORMAL":
+                    reason_codes.append(code)
         approved = len(reason_codes) == 1
         risk_state = "BLOCKED:" + ",".join(reason_codes) if not approved else "APPROVED"
-        telegram.notify_state(
+        enqueue_notification(
+            session,
             "risk_gate",
-            risk_state,
             (
                 f"DVL Paper Risk Gate {'通過' if approved else '阻擋'}\n"
                 f"目前曝險：{effective_current_exposure}x；要求：{payload.requested_exposure}x\n"
                 f"原因：{', '.join(reason_codes)}\nRun {run_id}"
             ),
+            state=risk_state,
         )
         risk = repository.append_paper_evidence(
             run_id=run_id,
@@ -623,11 +699,18 @@ def create_app(
                 "submitted_current_exposure": str(payload.current_exposure),
                 "requested_exposure": str(payload.requested_exposure),
                 "reason_codes": reason_codes,
-                "stale_required_contracts": stale_required,
-                "account_truth_present": account_truth_present,
-                "capital_loss_limit_breached": capital_loss_limit_breached,
+                "risk_gate": {
+                    "approved": decision.approved,
+                    "allowed_exposure": str(decision.allowed_exposure),
+                    "safety_state": decision.safety_state.value,
+                    "reason_codes": list(decision.reason_codes),
+                },
+                "stale_required_contracts": list(server.stale_required),
+                "account_truth_present": server.account_truth_present,
+                "capital_loss_limit_breached": server.capital_loss_limit_breached,
+                "strategy_state": context.strategy_state.value,
             },
-            formula_or_rule="cash-account exposure ceiling 2.0x; manual halt fail-closed",
+            formula_or_rule="shared RiskGate on server risk context; cash ceiling 2.0x",
         )
         evidence.append(risk)
         intent = repository.append_paper_evidence(
@@ -681,8 +764,12 @@ def create_app(
             raise HTTPException(status_code=404, detail="paper run not found")
         return [PaperEvidenceSchema.model_validate(row, from_attributes=True) for row in rows]
 
-    @app.post("/api/v1/account/sync", response_model=AccountSyncResponse)
-    def sync_account(session: SessionDependency) -> AccountSyncResponse:
+    @app.post(
+        "/api/v1/account/sync",
+        response_model=AccountSyncResponse,
+        responses={503: {"description": "read-only broker account sync is unavailable"}},
+    )
+    def sync_account(session: SessionDependency) -> AccountSyncResponse | JSONResponse:
         if runtime_settings.shioaji_mode != "readonly":
             raise HTTPException(status_code=409, detail="Shioaji mode must be readonly")
         secret_file = runtime_settings.shioaji_secret_file
@@ -704,27 +791,32 @@ def create_app(
                 capital_budget=Decimal(runtime_settings.initial_strategy_nav),
             )
         except (OSError, ValueError, ShioajiUnavailable) as exc:
-            telegram.notify_state(
+            # Discard any partial sync, but commit the failure notice itself;
+            # raising would roll the notice back together with the sync.
+            session.rollback()
+            enqueue_notification(
+                session,
                 "account_sync",
-                f"FAILED:{type(exc).__name__}",
                 (
                     "DVL 唯讀帳戶同步失敗\n"
                     f"錯誤類型：{type(exc).__name__}\n"
                     "請確認 Shioaji 連線、憑證與帳戶綁定。"
                 ),
+                state=f"FAILED:{type(exc).__name__}",
             )
-            raise HTTPException(
+            return JSONResponse(
                 status_code=503,
-                detail="read-only broker account sync is unavailable",
-            ) from exc
-        telegram.notify_state(
+                content={"detail": "read-only broker account sync is unavailable"},
+            )
+        enqueue_notification(
+            session,
             "account_sync",
-            "SUCCESS",
             (
                 "DVL 唯讀帳戶同步恢復\n"
                 f"帳戶：{result.account_masked}\n"
                 f"Strategy NAV：{result.strategy_nav}"
             ),
+            state="SUCCESS",
         )
         return AccountSyncResponse.model_validate(asdict(result))
 
@@ -743,8 +835,39 @@ def create_app(
         if payload.occurred_at.utcoffset() is None:
             raise HTTPException(status_code=422, detail="occurred_at must include a timezone")
         try:
-            result = record_strategy_fill(session, **payload.model_dump())
-        except ValueError as exc:
+            try:
+                result = record_strategy_fill(session, **payload.model_dump())
+            except IntegrityError:
+                # A concurrent request inserted this execution_id first. Discard
+                # our attempt and answer from the committed event: idempotent if
+                # identical, 409 if the details differ.
+                session.rollback()
+                result = record_strategy_fill(session, **payload.model_dump())
+        except (ValueError, LedgerWriteConflict) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return StrategyFillResponse(
+            created=result.created,
+            ledger=StrategyLedgerStateSchema.model_validate(asdict(result.state)),
+        )
+
+    @app.post(
+        "/api/v1/strategy-ledger/dividends/{action_id}/confirm",
+        response_model=StrategyFillResponse,
+    )
+    def confirm_dividend(
+        action_id: str,
+        payload: DividendConfirmationRequest,
+        session: SessionDependency,
+    ) -> StrategyFillResponse:
+        try:
+            result = confirm_dividend_payment(
+                session,
+                action_id=action_id,
+                received_amount=payload.received_amount,
+                note=payload.note,
+                confirmed_at=datetime.now(TAIPEI_TZ),
+            )
+        except (ValueError, LedgerWriteConflict) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return StrategyFillResponse(
             created=result.created,
@@ -760,7 +883,13 @@ def create_app(
         decision = policy.evaluate(payload.inputs(), payload.state.to_domain())
         decision = replace(
             decision,
-            diagnostics={**decision.diagnostics, "run_id": str(uuid4())},
+            diagnostics={
+                **decision.diagnostics,
+                "run_id": str(uuid4()),
+                # A what-if with caller-supplied inputs and state: kept for audit,
+                # never treated as the current target or policy state.
+                "trigger": MANUAL_EVALUATION_TRIGGER,
+            },
         )
         AuditRepository(session).append_strategy_decision(decision)
         return StrategyDecisionSchema(
@@ -799,47 +928,26 @@ def create_app(
         session: SessionDependency,
     ) -> RiskDecisionSchema:
         repository = AuditRepository(session)
-        stored_halt = repository.get_manual_halt().active
-        ledger = repository.get_strategy_ledger_state()
-        capital_loss_limit_breached = bool(
-            ledger
-            and (
-                ledger.principal_loss_ratio >= Decimal("0.40")
-                or ledger.maximum_drawdown >= Decimal("0.40")
-            )
+        claims = payload.model_dump(exclude={"requested_exposure", "actual_exposure"})
+        decision, context = evaluate_risk_context(
+            server_risk_state(repository, runtime_settings),
+            requested_exposure=payload.requested_exposure,
+            submitted_actual_exposure=payload.actual_exposure,
+            claims=ClientRiskClaims(**claims),
         )
-        actual_exposure = (
-            ledger.actual_exposure
-            if ledger is not None and ledger.actual_exposure is not None
-            else payload.actual_exposure
-        )
-        broker_safe = payload.broker_safe and bool(
-            ledger is None or (ledger.reconciled and ledger.actual_exposure is not None)
-        )
-        decision = RiskGate().evaluate(
-            RiskContext(
-                **{
-                    **payload.model_dump(),
-                    "actual_exposure": actual_exposure,
-                    "broker_safe": broker_safe,
-                    "manual_halt": payload.manual_halt or stored_halt,
-                    "capital_loss_limit_breached": (
-                        payload.capital_loss_limit_breached or capital_loss_limit_breached
-                    ),
-                }
-            )
-        )
+        actual_exposure = context.actual_exposure
         risk_state = (
             "BLOCKED:" + ",".join(decision.reason_codes) if not decision.approved else "APPROVED"
         )
-        telegram.notify_state(
+        enqueue_notification(
+            session,
             "risk_gate",
-            risk_state,
             (
                 f"DVL Risk Gate {'通過' if decision.approved else '阻擋'}\n"
                 f"目前曝險：{actual_exposure}x；要求：{payload.requested_exposure}x\n"
                 f"原因：{', '.join(decision.reason_codes)}"
             ),
+            state=risk_state,
         )
         return RiskDecisionSchema(**asdict(decision))
 

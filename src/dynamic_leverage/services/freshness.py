@@ -28,6 +28,15 @@ FRESHNESS_CONTRACTS = (
 )
 
 
+def stale_required_contracts(rows: list[FreshnessStatusSchema]) -> tuple[str, ...]:
+    """Contracts whose non-FRESH status must block exposure increases."""
+    return tuple(row.contract_key for row in rows if row.required and row.status != "FRESH")
+
+
+def contract_max_age_minutes(contract_key: str) -> int:
+    return next(age for key, _kind, _owner, age, _req in FRESHNESS_CONTRACTS if key == contract_key)
+
+
 def ensure_freshness_contracts(repository: AuditRepository) -> None:
     for key, kind, owner, max_age, required in FRESHNESS_CONTRACTS:
         repository.upsert_freshness_contract(
@@ -68,6 +77,7 @@ def freshness_rows(
                     max_age_minutes=contract.max_age_minutes,
                     reason="尚未收到快照",
                     formula_or_rule=f"required snapshot for {contract.kind}",
+                    required=getattr(contract, "required", True),
                 )
             )
             continue
@@ -109,6 +119,10 @@ def freshness_rows(
             date_reason = f"行情日期 {actual_date or '未知'}；預期完成日 {expected}"
             if unknown:
                 date_reason += "；日期或交易日曆證據不足，禁止加碼"
+        if observed > now:
+            # A future observation is a clock or timezone defect, never fresh evidence.
+            unknown = stale = True
+            date_reason = f"觀測時間 {observed.isoformat()} 晚於現在，時間證據不可信，禁止加碼"
         rows.append(
             FreshnessStatusSchema(
                 contract_key=contract.contract_key,
@@ -126,6 +140,7 @@ def freshness_rows(
                     )
                 ),
                 snapshot_id=snapshot.snapshot_id,
+                required=getattr(contract, "required", True),
                 effective_at=observed if not unknown else None,
                 source_trade_date=actual_date,
                 expected_trade_date=expected,

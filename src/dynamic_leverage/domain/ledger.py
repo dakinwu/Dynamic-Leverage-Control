@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal
+
+from dynamic_leverage.domain.corporate_actions import split_units
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +29,42 @@ class StrategyLedgerState:
     actual_exposure: Decimal | None = None
     account_exposure: Decimal | None = None
     exposure_quality: str = "unknown"
+    # Dividends owed since their ex-date (action_id -> amount); part of NAV.
+    receivables: dict[str, Decimal] = field(default_factory=dict)
+    # Dividends credited at payment date but not yet confirmed by the operator.
+    unconfirmed_dividends: dict[str, Decimal] = field(default_factory=dict)
+
+
+def strategy_nav(
+    cash: Decimal,
+    positions: dict[str, Decimal],
+    prices: dict[str, Decimal],
+    receivables: dict[str, Decimal],
+) -> Decimal:
+    """Cash, marked positions, and dividends already owed but not yet paid."""
+    marked = sum((positions[code] * prices[code] for code in positions), Decimal("0"))
+    return cash + marked + sum(receivables.values(), Decimal("0"))
+
+
+def _revalued(state: StrategyLedgerState, **changes) -> StrategyLedgerState:
+    """Apply changes, then recompute NAV and the loss metrics from the result."""
+    updated = replace(state, **changes)
+    nav = strategy_nav(updated.cash, updated.positions, updated.last_prices, updated.receivables)
+    peak, loss, loss_ratio, drawdown, maximum_drawdown = _loss_metrics(
+        nav=nav,
+        net_contributions=updated.net_contributions,
+        prior_peak=state.peak_nav,
+        prior_maximum_drawdown=state.maximum_drawdown,
+    )
+    return replace(
+        updated,
+        current_nav=nav,
+        peak_nav=peak,
+        principal_loss_amount=loss,
+        principal_loss_ratio=loss_ratio,
+        current_drawdown=drawdown,
+        maximum_drawdown=maximum_drawdown,
+    )
 
 
 def _loss_metrics(
@@ -131,10 +169,7 @@ def mark_strategy_ledger(
             exposure_quality="reconciliation-break",
         )
 
-    nav = state.cash + sum(
-        (expected[instrument] * prices[instrument] for instrument in expected),
-        Decimal("0"),
-    )
+    nav = strategy_nav(state.cash, expected, prices, state.receivables)
     peak, loss, loss_ratio, drawdown, maximum_drawdown = _loss_metrics(
         nav=nav,
         net_contributions=state.net_contributions,
@@ -201,10 +236,7 @@ def apply_strategy_fill(
     else:
         prices.pop(instrument, None)
     cash = state.cash + cash_change
-    nav = cash + sum(
-        (positions[code] * prices[code] for code in positions),
-        Decimal("0"),
-    )
+    nav = strategy_nav(cash, positions, prices, state.receivables)
     peak, loss, loss_ratio, drawdown, maximum_drawdown = _loss_metrics(
         nav=nav,
         net_contributions=state.net_contributions,
@@ -229,4 +261,69 @@ def apply_strategy_fill(
         actual_exposure=None,
         account_exposure=None,
         exposure_quality="awaiting-broker-confirmation",
+    )
+
+
+def apply_split(
+    state: StrategyLedgerState, *, symbol: str, ratio: int, at: datetime
+) -> StrategyLedgerState:
+    """Units times ratio, price divided by ratio: wealth and loss metrics unchanged."""
+    if symbol not in state.positions:
+        raise ValueError("split applies only to a held strategy position")
+    positions = dict(state.positions)
+    prices = dict(state.last_prices)
+    positions[symbol] = split_units(positions[symbol], ratio)
+    prices[symbol] = prices[symbol] / Decimal(ratio)
+    return _revalued(
+        state,
+        positions=positions,
+        last_prices=prices,
+        position_revision=state.position_revision + 1,
+        updated_at=at,
+    )
+
+
+def accrue_dividend(
+    state: StrategyLedgerState, *, action_id: str, amount: Decimal, at: datetime
+) -> StrategyLedgerState:
+    """At the ex-date the dividend becomes owed; the price drop is offset in NAV."""
+    if action_id in state.receivables or action_id in state.unconfirmed_dividends:
+        raise ValueError(f"dividend {action_id} is already booked")
+    if not amount.is_finite() or amount < 0:
+        raise ValueError("dividend entitlement cannot be negative")
+    return _revalued(state, receivables={**state.receivables, action_id: amount}, updated_at=at)
+
+
+def pay_dividend(
+    state: StrategyLedgerState, *, action_id: str, at: datetime
+) -> StrategyLedgerState:
+    """At the payment date the receivable becomes cash, pending confirmation."""
+    if action_id not in state.receivables:
+        raise ValueError(f"no receivable for dividend {action_id}")
+    receivables = dict(state.receivables)
+    amount = receivables.pop(action_id)
+    return _revalued(
+        state,
+        cash=state.cash + amount,
+        receivables=receivables,
+        unconfirmed_dividends={**state.unconfirmed_dividends, action_id: amount},
+        updated_at=at,
+    )
+
+
+def confirm_dividend(
+    state: StrategyLedgerState, *, action_id: str, received: Decimal, at: datetime
+) -> StrategyLedgerState:
+    """Book what actually arrived; withholdings and remittance fees reduce cash."""
+    if action_id not in state.unconfirmed_dividends:
+        raise ValueError(f"no unconfirmed payment for dividend {action_id}")
+    if not received.is_finite() or received < 0:
+        raise ValueError("received dividend cannot be negative")
+    unconfirmed = dict(state.unconfirmed_dividends)
+    credited = unconfirmed.pop(action_id)
+    return _revalued(
+        state,
+        cash=state.cash + received - credited,
+        unconfirmed_dividends=unconfirmed,
+        updated_at=at,
     )

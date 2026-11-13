@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 def checker():
-    path = Path(__file__).resolve().parents[2] / "scripts/check_public_files.py"
+    path = Path(__file__).resolve().parents[2] / "scripts/ops/check_public_files.py"
     spec = importlib.util.spec_from_file_location("public_checker", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

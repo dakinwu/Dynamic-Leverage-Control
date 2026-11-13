@@ -1,23 +1,43 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+REFERENCE_DIR = Path(__file__).parents[1] / "reference"
 
-# Frozen official annual schedule, shipped with its provenance. Unknown years
+
+def load_calendars(reference_dir: Path = REFERENCE_DIR) -> tuple[frozenset[int], frozenset[date]]:
+    """Load every frozen official annual schedule listed in the provenance file.
+
+    Each year must match its recorded sha256 and ``queryYear``; a mismatch is a
+    packaging defect and raises instead of silently trusting edited data.
+    """
+    provenance = json.loads((reference_dir / "calendar-provenance.json").read_bytes())
+    years: set[int] = set()
+    holidays: set[date] = set()
+    for entry in provenance["calendars"]:
+        body = (reference_dir / entry["file"]).read_bytes()
+        if hashlib.sha256(body).hexdigest() != entry["sha256"]:
+            raise ValueError(f"{entry['file']}: sha256 differs from calendar provenance")
+        schedule = json.loads(body)
+        if int(schedule["queryYear"]) != int(entry["year"]):
+            raise ValueError(f"{entry['file']}: queryYear differs from calendar provenance")
+        years.add(int(entry["year"]))
+        holidays.update(
+            date.fromisoformat(row[0])
+            for row in schedule["data"]
+            if "開始交易日" not in row[1] and "最後交易日" not in row[1]
+        )
+    return frozenset(years), frozenset(holidays)
+
+
+# Frozen official annual schedules, shipped with their provenance. Unknown years
 # retain weekday scheduling, but freshness must explicitly fail closed.
-_CALENDAR = json.loads(
-    (Path(__file__).parents[1] / "reference/twse-calendar-2026.json").read_bytes()
-)
-KNOWN_YEARS = frozenset({int(_CALENDAR["queryYear"])})
-KNOWN_HOLIDAYS = frozenset(
-    date.fromisoformat(row[0])
-    for row in _CALENDAR["data"]
-    if "開始交易日" not in row[1] and "最後交易日" not in row[1]
-)
+KNOWN_YEARS, KNOWN_HOLIDAYS = load_calendars()
 
 
 def calendar_verified(value: date) -> bool:
@@ -44,6 +64,13 @@ def next_trading_day(value: date) -> date:
     return candidate
 
 
+def previous_trading_day(value: date) -> date:
+    candidate = value - timedelta(days=1)
+    while not is_trading_day(candidate):
+        candidate -= timedelta(days=1)
+    return candidate
+
+
 def next_session_open(now: datetime | None = None) -> datetime:
     current = (now or datetime.now(TAIPEI_TZ)).astimezone(TAIPEI_TZ)
     candidate = current.replace(hour=9, minute=15, second=0, microsecond=0)
@@ -51,6 +78,23 @@ def next_session_open(now: datetime | None = None) -> datetime:
         day = next_trading_day(current.date())
         candidate = datetime.combine(day, time(9, 15), tzinfo=TAIPEI_TZ)
     return candidate
+
+
+ACCOUNT_SYNC_OPENS = time(9, 5)
+
+
+def account_sync_due(now: datetime, last_synced_on: date | None) -> bool:
+    """Once per trading day from 09:05 Taipei, until it has succeeded that day.
+
+    Unlike the short ``account-sync`` slot, this catches up on the first cycle
+    after a missed window, whatever the scheduler interval is.
+    """
+    current = now.astimezone(TAIPEI_TZ)
+    return (
+        is_trading_day(current.date())
+        and current.time() >= ACCOUNT_SYNC_OPENS
+        and last_synced_on != current.date()
+    )
 
 
 def next_account_sync(now: datetime | None = None) -> datetime:

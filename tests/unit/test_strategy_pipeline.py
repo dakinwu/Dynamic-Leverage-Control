@@ -17,11 +17,12 @@ def _record(
     checksum: str,
     payload: dict,
     observed_at: datetime | None = None,
+    source: str | None = None,
 ) -> str:
     timestamp = observed_at or datetime.now(UTC)
     row, _ = repo.append_raw_snapshot(
         kind=kind,
-        source=f"test:{kind}",
+        source=source or f"test:{kind}",
         observed_at=timestamp,
         received_at=timestamp,
         quality="authoritative",
@@ -29,6 +30,14 @@ def _record(
         payload=payload,
     )
     return row.snapshot_id
+
+
+def _vix(stamp: str, value: str) -> dict:
+    """Official dated TAIFEX daily file; undated VIX text has no verifiable session."""
+    return {
+        "source": f"https://www.taifex.com.tw/cht/7/getVixData?filesname={stamp}",
+        "payload": {"body_text": f"{stamp}\tLast 1 min AVG\t{value}\r\n"},
+    }
 
 
 def test_pipeline_requires_point_in_time_history() -> None:
@@ -75,7 +84,7 @@ def test_pipeline_builds_inputs_from_authoritative_snapshots() -> None:
             repo,
             kind="market.taifex_vix.official",
             checksum="vix-1",
-            payload={"schema": "official-http-raw-v1", "body_text": "臺股 VIX 18.5"},
+            **_vix("20250821", "18.5"),
             observed_at=datetime(2025, 8, 21, tzinfo=UTC),
         )
         valuation_rows = [
@@ -162,14 +171,14 @@ def test_pipeline_ignores_vix_received_after_decision_date() -> None:
             repo,
             kind="market.taifex_vix.official",
             checksum="known-vix",
-            payload={"body_text": "臺股 VIX 18"},
+            **_vix("20250801", "18"),
             observed_at=datetime(2025, 8, 1, tzinfo=UTC),
         )
         _record(
             repo,
             kind="market.taifex_vix.official",
             checksum="future-vix",
-            payload={"body_text": "臺股 VIX 40"},
+            **_vix("20250802", "40"),
             observed_at=datetime(2025, 8, 2, tzinfo=UTC),
         )
         result = build_strategy_inputs(repo, as_of=date(2025, 8, 1))
@@ -188,7 +197,7 @@ def test_pipeline_excludes_later_same_day_evidence() -> None:
                 repo,
                 kind="market.taifex_vix.official",
                 checksum=f"hour-{hour}",
-                payload={"body_text": f"臺股 VIX {vix}"},
+                **_vix("20250801", vix),
                 observed_at=datetime(2025, 8, 1, hour, tzinfo=UTC),
             )
         result = build_strategy_inputs(

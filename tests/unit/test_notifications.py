@@ -24,3 +24,10 @@ def test_telegram_notifier_deduplicates_unchanged_state(monkeypatch) -> None:
     assert notifier.notify_state("risk_gate", "BLOCKED:DATA_UNSAFE", "blocked again") is False
     assert notifier.notify_state("risk_gate", "APPROVED", "recovered") is True
     assert calls == ["blocked", "recovered"]
+
+
+def test_secret_path_that_is_a_directory_disables_notifications(tmp_path: Path) -> None:
+    # Docker creates a directory when a bind-mounted secret file is missing.
+    directory = tmp_path / "runtime.env"
+    directory.mkdir()
+    assert send_telegram_message(directory, "not sent") is False

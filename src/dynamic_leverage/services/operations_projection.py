@@ -18,11 +18,19 @@ from dynamic_leverage.api.schemas import (
     QueueItemSchema,
     StrategySelectionSchema,
 )
+from dynamic_leverage.domain.risk import capital_loss_limit_breached
 from dynamic_leverage.infrastructure.brokers.shioaji import load_credentials
 from dynamic_leverage.infrastructure.repository import AuditRepository
 from dynamic_leverage.infrastructure.tables import NotificationOutboxRecord, OperationsStateRecord
 from dynamic_leverage.services.account_sync import binding_fingerprint
-from dynamic_leverage.services.freshness import ensure_freshness_contracts, freshness_rows
+from dynamic_leverage.services.calendar import TAIPEI_TZ
+from dynamic_leverage.services.corporate_actions import distribution_actions
+from dynamic_leverage.services.freshness import (
+    ensure_freshness_contracts,
+    freshness_rows,
+    stale_required_contracts,
+)
+from dynamic_leverage.services.ledger import ALLOWED_LEDGER_INSTRUMENTS
 from dynamic_leverage.services.notifications import send_telegram_message
 from dynamic_leverage.services.operations import (
     AccountPositionSummary,
@@ -88,11 +96,7 @@ def build_operations(repository, settings, *, system=None, now=None):
     account_payload = account_snapshot.payload if account_snapshot is not None else {}
     ledger = repository.get_strategy_ledger_state()
     freshness = freshness_rows(repository, now=now)
-    stale_required = tuple(
-        item.contract_key
-        for item in freshness
-        if item.status != "FRESH" and item.contract_key != "capital_00685l_pcf"
-    )
+    stale_required = stale_required_contracts(freshness)
     dvl_latest = next(
         (row for row in decisions if row.strategy_version == "dvl-tw-v2-shadow"),
         None,
@@ -138,9 +142,8 @@ def build_operations(repository, settings, *, system=None, now=None):
             maximum_drawdown=ledger.maximum_drawdown if ledger is not None else None,
             capital_loss_limit_breached=bool(
                 ledger
-                and (
-                    ledger.principal_loss_ratio >= Decimal("0.40")
-                    or ledger.maximum_drawdown >= Decimal("0.40")
+                and capital_loss_limit_breached(
+                    ledger.principal_loss_ratio, ledger.maximum_drawdown
                 )
             ),
             pending_settlement=(
@@ -202,7 +205,7 @@ def build_operations(repository, settings, *, system=None, now=None):
             }
         )
     for item in freshness:
-        if item.status != "FRESH" and item.contract_key != "capital_00685l_pcf":
+        if item.required and item.status != "FRESH":
             active_queue.append(
                 {
                     "item_id": f"freshness:{item.contract_key}",
@@ -214,6 +217,7 @@ def build_operations(repository, settings, *, system=None, now=None):
                     "evidence_refs": [item.snapshot_id] if item.snapshot_id else [],
                 }
             )
+    active_queue.extend(_ledger_queue_items(repository, ledger, now))
     halt = repository.get_manual_halt()
     if halt.active:
         active_queue.append(
@@ -310,6 +314,78 @@ def build_operations(repository, settings, *, system=None, now=None):
     return OperationsSummaryResponse.model_validate(payload), active_queue
 
 
+_LEDGER_BREAK_ACTIONS = (
+    (
+        "unregistered-quantity-ratio",
+        "核對官方分割公告，審核後登記到 reference/corporate-actions.json"
+        " 並更新其 provenance，再重新同步。",
+    ),
+    (
+        "split-not-reflected-by-broker",
+        "確認券商是否已換發分割後單位，再重新同步唯讀帳戶。",
+    ),
+    (
+        "corporate-action-facts-changed",
+        "核對官方更正公告；已入帳事件不會被覆寫，需人工決定更正方式。",
+    ),
+)
+
+
+def _ledger_queue_items(repository, ledger, now) -> list[dict[str, object]]:
+    """Ledger breaks, dividends awaiting confirmation, and missing dividend evidence."""
+    if ledger is None:
+        return []
+    items: list[dict[str, object]] = []
+    reason = ledger.reconciliation_reason or ""
+    if not ledger.reconciled and reason != "awaiting-broker-confirmation":
+        next_action = next(
+            (action for key, action in _LEDGER_BREAK_ACTIONS if key in reason),
+            "補登實際成交或處理不支援的部位條件，然後重新同步。",
+        )
+        items.append(
+            {
+                "item_id": "ledger:reconciliation",
+                "severity": "BLOCKER",
+                "title": "策略帳本無法與券商對帳",
+                "detail": reason or "原因未記錄",
+                "impact": "實際曝險未知，禁止曝險判定與紙上調整。",
+                "next_action": next_action,
+                "evidence_refs": [ledger.last_account_snapshot_id]
+                if ledger.last_account_snapshot_id
+                else [],
+            }
+        )
+    for action_id, amount in sorted(ledger.unconfirmed_dividends.items()):
+        items.append(
+            {
+                "item_id": f"ledger:dividend-unconfirmed:{action_id}",
+                "severity": "ACTION",
+                "title": f"配息 {action_id} 已依應收金額入帳，待確認實收",
+                "detail": f"暫以 {amount} 元入帳；補充保費或匯費可能使實收較少。",
+                "impact": "策略現金可能略高於實際，影響虧損與曝險分母。",
+                "next_action": "到帳務頁輸入銀行實際入帳金額。",
+                "evidence_refs": [],
+            }
+        )
+    today = (now or datetime.now(UTC)).astimezone(TAIPEI_TZ).date()
+    _actions, problems = distribution_actions(
+        repository, sorted(ALLOWED_LEDGER_INSTRUMENTS), today=today
+    )
+    if problems:
+        items.append(
+            {
+                "item_id": "corporate-actions:distributions",
+                "severity": "ACTION",
+                "title": "官方配息資料未取得或無法解析",
+                "detail": "；".join(problems),
+                "impact": "可能漏記除息應收，使除息日出現假虧損。",
+                "next_action": "確認排程已擷取 TWSE ETF 配息表；擷取失敗時不會當作無配息。",
+                "evidence_refs": [],
+            }
+        )
+    return items
+
+
 def reconcile_operations(session, settings, *, now=None):
     """Persist conditions and outbox atomically; caller commits before dispatch."""
     now = now or datetime.now(UTC)
@@ -318,11 +394,7 @@ def reconcile_operations(session, settings, *, now=None):
     before = {row.item_id: row.status for row in repo.queue_items()}
     summary, active = build_operations(repo, settings, now=now)
     queue = repo.reconcile_queue(active)
-    unsafe = sorted(
-        item.contract_key
-        for item in summary.freshness
-        if item.status != "FRESH" and item.contract_key != "capital_00685l_pcf"
-    )
+    unsafe = sorted(stale_required_contracts(summary.freshness))
     value = "UNSAFE:" + ",".join(unsafe) if unsafe else "FRESH"
     state = session.get(OperationsStateRecord, "freshness")
     if state is None or state.state != value:
@@ -363,6 +435,39 @@ def reconcile_operations(session, settings, *, now=None):
     )
     session.flush()
     return summary
+
+
+OUTBOX_PENDING = "notification_outbox_pending"
+
+
+def enqueue_notification(session, channel, message, *, state=None, now=None) -> bool:
+    """Stage an outbox message in the caller's transaction.
+
+    With ``state`` the message is enqueued only when the channel's last staged
+    state differs, persisted beside the event so deduplication survives worker
+    restarts and is rolled back together with a failed write.
+    """
+    now = now or datetime.now(UTC)
+    if state is not None:
+        key = f"notify:{channel}"
+        record = session.get(OperationsStateRecord, key)
+        if record is not None and record.state == state:
+            return False
+        if record is None:
+            record = OperationsStateRecord(key=key)
+            session.add(record)
+        record.state, record.updated_at = state, now
+    session.add(
+        NotificationOutboxRecord(
+            event_id=str(uuid4()),
+            channel=channel,
+            message=message,
+            created_at=now,
+            attempts=0,
+        )
+    )
+    session.info[OUTBOX_PENDING] = True
+    return True
 
 
 def dispatch_notifications(factory, secret_file, *, sender=send_telegram_message):

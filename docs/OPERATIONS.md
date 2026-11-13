@@ -8,7 +8,7 @@
 
 ```bash
 # 在專案根目錄執行
-./scripts/setup-secrets.sh
+./scripts/ops/setup-secrets.sh
 ```
 
 wizard 會依序處理：
@@ -23,7 +23,7 @@ wizard 會依序處理：
 完成後 secrets 會放在 Windows 的 LocalAppData 外部目錄，不會寫入 repository。重新啟動：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-local.ps1 -Build
+powershell -ExecutionPolicy Bypass -File .\scripts\ops\run-local.ps1 -Build
 ```
 
 確認唯讀連線與合約：
@@ -142,7 +142,7 @@ POST /api/v1/risk/manual-halt
 POST /api/v1/risk/manual-halt/release
 ```
 
-若 secrets 含 `TELEGRAM_BOT_TOKEN` 與 `TELEGRAM_CHAT_ID`，平台會在以下狀態變化時傳送去重通知：Scheduler 成功／降級、必要資料過期或恢復、唯讀帳戶同步失敗或恢復、Risk Gate 阻擋／放行、Manual Halt 啟用／解除，以及 Operator Queue 新增／ACK／RESOLVED／REOPENED。未設定時不會阻擋資料處理，也不會在訊息中包含完整帳號、持倉或金鑰。
+若 secrets 含 `TELEGRAM_BOT_TOKEN` 與 `TELEGRAM_CHAT_ID`，平台會在以下狀態變化時傳送去重通知：Scheduler 成功／降級、必要資料過期或恢復、唯讀帳戶同步失敗或恢復、Risk Gate 阻擋／放行、Manual Halt 啟用／解除，以及 Operator Queue 新增／ACK／RESOLVED／REOPENED。未設定時不會阻擋資料處理，也不會在訊息中包含完整帳號、持倉或金鑰。通知先與觸發它的狀態變更一起寫入`notification_outbox`，交易提交後才由API背景工作或scheduler送出；提交失敗時API回5xx且不送通知。
 
 手動執行一次：
 
@@ -236,7 +236,7 @@ npm run build
 
 **畫面又顯示「需先設定帳戶 ID」**
 
-請確認 Docker Desktop 已重啟到最新 Compose 設定；目前 Compose 會預設從 `%LOCALAPPDATA%\dynamic-leverage-2x\secrets\runtime.env` 掛載 secrets，API 也會從該檔案讀取帳戶綁定。若仍看到舊狀態，從專案根目錄執行 `docker compose up -d --build`，或使用 secrets-aware launcher：`powershell -ExecutionPolicy Bypass -File .\scripts\run-local.ps1 -Build`。
+請確認 Docker Desktop 已重啟到最新 Compose 設定；Compose 未設定 `DVL_SECRET_FILE` 時只掛載空白範本 `config/empty-secrets.env`，不會自動讀取個人憑證；要使用 `%LOCALAPPDATA%\dynamic-leverage-2x\secrets\runtime.env`，請在 `.env` 設定 `DVL_SECRET_FILE` 指向它，或使用會自動設定的 secrets-aware launcher。指定的檔案不存在時 Compose 會直接報錯，不會建立同名資料夾。若仍看到舊狀態，從專案根目錄執行 `docker compose up -d --build`，或使用 launcher：`powershell -ExecutionPolicy Bypass -File .\scripts\ops\run-local.ps1 -Build`。
 
 **策略顯示缺少 `rv20`**
 
@@ -250,3 +250,9 @@ npm run build
 ## 研究資料界線
 
 公開研究方法見[RESEARCH.md](RESEARCH.md)。完整來源擷取、帳務CSV、私人研究紀錄與歷史輸出只留本機，不隨公開副本提供；相關舊研究腳本不能僅靠公開檔案重現。
+
+## 分割與配息（策略台帳）
+
+- **配息**：scheduler 每次執行都會擷取 TWSE ETF 配息表（0050、00631L、00685L）。除息日記為應收配息，發放日暫以應收金額轉為現金，並在 Operator Queue 提醒到帳務頁輸入銀行實際入帳金額。擷取失敗或無法解析時會開待辦，不會當作沒有配息。
+- **分割**：只有登記在 `src/dynamic_leverage/reference/corporate-actions.json` 的分割會入帳，而且要等券商顯示的股數剛好等於「帳本股數 × 比例」。新增分割時，先保存官方新聞稿與發行人公告原檔，把比例與日期寫進登記檔，再重新計算 `corporate-actions-provenance.json` 的 SHA-256（以 LF 換行計算），然後重新同步帳戶。未登記的整數倍股數只會造成對帳失敗並開待辦。
+- 補登成交的時間若早於已入帳的分割或除息，會被拒絕（409），因為它會改變已入帳事件的股數。

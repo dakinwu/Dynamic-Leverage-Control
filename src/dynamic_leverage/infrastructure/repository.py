@@ -9,7 +9,7 @@ from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from dynamic_leverage.domain.ledger import StrategyLedgerState
@@ -37,6 +37,18 @@ from dynamic_leverage.infrastructure.tables import (
     StrategySelectionRecord,
     TradeIntentRecord,
 )
+
+MANUAL_EVALUATION_TRIGGER = "manual-evaluate"
+
+
+def _official_evaluation():
+    """Exclude manual what-if evaluations from current-target and state queries."""
+    trigger = StrategyEvaluationRecord.diagnostics["trigger"].as_string()
+    return or_(trigger.is_(None), trigger != MANUAL_EVALUATION_TRIGGER)
+
+
+class LedgerWriteConflict(RuntimeError):
+    """The strategy ledger row changed after it was read; re-read and retry."""
 
 
 class AuditRepository:
@@ -107,6 +119,10 @@ class AuditRepository:
                 str(state.account_exposure) if state.account_exposure is not None else None
             ),
             "exposure_quality": state.exposure_quality,
+            "receivables": {key: str(value) for key, value in sorted(state.receivables.items())},
+            "unconfirmed_dividends": {
+                key: str(value) for key, value in sorted(state.unconfirmed_dividends.items())
+            },
         }
 
     @staticmethod
@@ -136,25 +152,76 @@ class AuditRepository:
                 Decimal(row.account_exposure) if row.account_exposure is not None else None
             ),
             exposure_quality=row.exposure_quality,
+            receivables={key: Decimal(value) for key, value in (row.receivables or {}).items()},
+            unconfirmed_dividends={
+                key: Decimal(value) for key, value in (row.unconfirmed_dividends or {}).items()
+            },
         )
 
-    def get_strategy_ledger_state(self) -> StrategyLedgerState | None:
-        row = self.session.get(StrategyLedgerStateRecord, "primary")
+    def get_strategy_ledger_state(self, *, refresh: bool = False) -> StrategyLedgerState | None:
+        """Read the projection; ``refresh`` bypasses the session cache before a write."""
+        row = self.session.get(StrategyLedgerStateRecord, "primary", populate_existing=refresh)
         return self._ledger_state_from_row(row) if row is not None else None
 
-    def save_strategy_ledger_state(self, state: StrategyLedgerState) -> StrategyLedgerStateRecord:
-        row = self.session.get(StrategyLedgerStateRecord, "primary")
-        values = self.ledger_state_payload(state)
-        values["initialized_at"] = state.initialized_at
-        values["updated_at"] = state.updated_at
-        if row is None:
+    @staticmethod
+    def _ledger_state_values(state: StrategyLedgerState) -> dict[str, Any]:
+        payload = AuditRepository.ledger_state_payload(state)
+        return {
+            **payload,
+            **{
+                key: Decimal(payload[key])
+                for key in (
+                    "capital_budget",
+                    "net_contributions",
+                    "cash",
+                    "current_nav",
+                    "peak_nav",
+                    "principal_loss_amount",
+                    "principal_loss_ratio",
+                    "current_drawdown",
+                    "maximum_drawdown",
+                )
+            },
+            "actual_exposure": state.actual_exposure,
+            "account_exposure": state.account_exposure,
+            "initialized_at": state.initialized_at,
+            "updated_at": state.updated_at,
+        }
+
+    def save_strategy_ledger_state(
+        self,
+        state: StrategyLedgerState,
+        *,
+        expected: StrategyLedgerState | None = None,
+    ) -> StrategyLedgerStateRecord:
+        """Write the projection only if it is still the version the caller read.
+
+        ``expected=None`` initializes the ledger. Otherwise the update is a
+        compare-and-swap on ``(position_revision, updated_at)``: fills bump the
+        revision and marks move ``updated_at``, so any interleaved writer makes
+        this raise ``LedgerWriteConflict`` instead of being silently overwritten.
+        """
+        values = self._ledger_state_values(state)
+        if expected is None:
+            if self.session.get(StrategyLedgerStateRecord, "primary") is not None:
+                raise LedgerWriteConflict("strategy ledger is already initialized")
             row = StrategyLedgerStateRecord(ledger_key="primary", **values)
             self.session.add(row)
-        else:
-            for key, value in values.items():
-                setattr(row, key, value)
-        self.session.flush()
-        return row
+            self.session.flush()
+            return row
+        result = self.session.execute(
+            update(StrategyLedgerStateRecord)
+            .where(
+                StrategyLedgerStateRecord.ledger_key == "primary",
+                StrategyLedgerStateRecord.position_revision == expected.position_revision,
+                StrategyLedgerStateRecord.updated_at == expected.updated_at,
+            )
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            raise LedgerWriteConflict("strategy ledger changed since it was read")
+        return self.session.get(StrategyLedgerStateRecord, "primary", populate_existing=True)
 
     def strategy_ledger_event(self, event_key: str) -> StrategyLedgerEventRecord | None:
         return self.session.scalar(
@@ -265,17 +332,19 @@ class AuditRepository:
 
     def policy_state_for_evaluation(self, strategy_version: str, as_of: date) -> PolicyState:
         """Return a stable pre-decision state, including for same-day reruns."""
-        same_day = self.session.scalar(
+        same_day_rows = self.session.scalars(
             select(StrategyEvaluationRecord)
             .where(
                 StrategyEvaluationRecord.strategy_version == strategy_version,
                 StrategyEvaluationRecord.as_of == as_of,
                 StrategyEvaluationRecord.state_before.is_not(None),
+                _official_evaluation(),
             )
             .order_by(StrategyEvaluationRecord.recorded_at.asc())
-            .limit(1)
         )
-        if same_day is not None and same_day.state_before is not None:
+        # Rows written before none_as_null may hold JSON null; skip them here.
+        same_day = next((row for row in same_day_rows if row.state_before is not None), None)
+        if same_day is not None:
             return self._policy_state_from_payload(same_day.state_before)
 
         projection = self.session.get(StrategyPolicyStateRecord, strategy_version)
@@ -292,6 +361,7 @@ class AuditRepository:
                 StrategyEvaluationRecord.as_of < as_of,
                 StrategyEvaluationRecord.valid.is_(True),
                 StrategyEvaluationRecord.target_exposure.is_not(None),
+                _official_evaluation(),
             )
             .order_by(
                 StrategyEvaluationRecord.as_of.desc(),
@@ -362,12 +432,19 @@ class AuditRepository:
         return row
 
     def latest_strategy_decisions(self) -> list[StrategyEvaluationRecord]:
-        versions = select(StrategyEvaluationRecord.strategy_version).distinct()
+        versions = (
+            select(StrategyEvaluationRecord.strategy_version)
+            .where(_official_evaluation())
+            .distinct()
+        )
         results = []
         for version in self.session.scalars(versions):
             query = (
                 select(StrategyEvaluationRecord)
-                .where(StrategyEvaluationRecord.strategy_version == version)
+                .where(
+                    StrategyEvaluationRecord.strategy_version == version,
+                    _official_evaluation(),
+                )
                 .order_by(StrategyEvaluationRecord.recorded_at.desc())
                 .limit(1)
             )
@@ -400,7 +477,7 @@ class AuditRepository:
     def latest_strategy_decision(self, version: str) -> StrategyEvaluationRecord | None:
         query = (
             select(StrategyEvaluationRecord)
-            .where(StrategyEvaluationRecord.strategy_version == version)
+            .where(StrategyEvaluationRecord.strategy_version == version, _official_evaluation())
             .order_by(StrategyEvaluationRecord.recorded_at.desc())
             .limit(1)
         )

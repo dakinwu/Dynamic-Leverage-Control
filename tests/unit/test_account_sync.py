@@ -179,7 +179,7 @@ def test_leveraged_etf_exposure_uses_official_pcf_snapshot() -> None:
                 received_at=leveraged.observed_at,
                 quality="authoritative",
                 checksum="b" * 64,
-                payload={"body_text": "實際曝險 200%"},
+                payload={"body_text": "交易日期: 2026/08/31 實際曝險 200%"},
             )
             result = sync_account_snapshot(
                 session,

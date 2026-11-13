@@ -92,7 +92,9 @@ async def _ingest_twse(codes: set[str]) -> None:
 
 def _ingest_valuation(path: Path) -> None:
     snapshot = load_manual_valuation(path)
-    source = f"manual-file:{path.resolve()}"
+    # File name only: an absolute path would expose the operator's account name
+    # and folder layout in the Data page and in screenshots.
+    source = f"manual-file:{path.name}"
     engine, session_factory = _repository()
     try:
         with session_factory.begin() as session:
@@ -110,13 +112,19 @@ def _ingest_valuation(path: Path) -> None:
         engine.dispose()
 
 
-def _check_shioaji(codes: tuple[str, ...]) -> None:
+def _readonly_secret_file() -> Path:
+    """Every broker login goes through here: SHIOAJI_MODE=disabled never logs in."""
     settings = get_settings()
     if settings.shioaji_mode != "readonly":
-        raise RuntimeError("set SHIOAJI_MODE=readonly for the read-only connectivity check")
+        raise RuntimeError("set SHIOAJI_MODE=readonly to use read-only Shioaji commands")
     if settings.shioaji_secret_file is None:
         raise RuntimeError("SHIOAJI_SECRET_FILE is not configured")
-    adapter = ShioajiReadOnlyAdapter(secret_file=settings.shioaji_secret_file)
+    return settings.shioaji_secret_file
+
+
+def _check_shioaji(codes: tuple[str, ...]) -> None:
+    secret_file = _readonly_secret_file()
+    adapter = ShioajiReadOnlyAdapter(secret_file=secret_file)
     try:
         adapter.connect()
         result = {
@@ -131,10 +139,7 @@ def _check_shioaji(codes: tuple[str, ...]) -> None:
 
 
 def _list_shioaji_accounts(index: int | None) -> None:
-    settings = get_settings()
-    if settings.shioaji_secret_file is None:
-        raise RuntimeError("SHIOAJI_SECRET_FILE is not configured")
-    adapter = ShioajiReadOnlyAdapter(secret_file=settings.shioaji_secret_file)
+    adapter = ShioajiReadOnlyAdapter(secret_file=_readonly_secret_file())
     output_lines: list[str] = []
     try:
         adapter.connect()

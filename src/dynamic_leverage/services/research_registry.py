@@ -251,7 +251,9 @@ def duplicate_preflight(root: Path, signature: str, rerun_reason: str | None = N
     """Refuse identical scientific experiments before creating an output directory."""
     path = root / "docs/research/experiment-registry.json"
     if not path.exists():
-        raise ValueError("research registry missing; run scripts/update_research_registry.py first")
+        raise ValueError(
+            "research registry missing; run scripts/research/update_research_registry.py first"
+        )
     registry = json.loads(path.read_bytes())
     if registry.get("schema") != SCHEMA:
         raise ValueError("unsupported research registry")

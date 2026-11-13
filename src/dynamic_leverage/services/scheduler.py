@@ -23,15 +23,17 @@ from dynamic_leverage.infrastructure.brokers.shioaji import (
 from dynamic_leverage.infrastructure.database import make_engine, make_session_factory
 from dynamic_leverage.infrastructure.providers.official_indices import OfficialIndicesClient
 from dynamic_leverage.infrastructure.providers.official_valuation import OfficialValuationClient
-from dynamic_leverage.infrastructure.repository import AuditRepository
+from dynamic_leverage.infrastructure.repository import AuditRepository, LedgerWriteConflict
 from dynamic_leverage.services.account_sync import sync_account_snapshot
 from dynamic_leverage.services.backfill import run_official_backfill
 from dynamic_leverage.services.calendar import (
+    account_sync_due,
     next_account_sync,
     next_close_run,
     next_session_open,
     schedule_slot,
 )
+from dynamic_leverage.services.corporate_actions import DISTRIBUTION_KIND
 from dynamic_leverage.services.ingestion import (
     ingest_official_http_snapshot,
     ingest_official_valuation_snapshot,
@@ -48,11 +50,58 @@ DEFAULT_CODES = {"0050", "00631L", "00685L"}
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 
+def _now() -> datetime:
+    """Cycle clock (a seam for tests)."""
+    return datetime.now(TAIPEI_TZ)
+
+
 def is_retryable_scheduler_failure(exc: Exception) -> bool:
     """Return whether the current schedule slot should be retried after this failure."""
     return isinstance(
-        exc, httpx.TransportError | TimeoutError | OSError | ShioajiUnavailable | OperationalError
+        exc,
+        httpx.TransportError
+        | TimeoutError
+        | OSError
+        | ShioajiUnavailable
+        | OperationalError
+        | LedgerWriteConflict,
     )
+
+
+def record_shadow_decision(repository: AuditRepository, run_id: str):
+    """Evaluate the shadow policy from stored evidence and persist the decision.
+
+    Invalid inputs still persist an invalid run so the dashboard cannot show an
+    older target as current; only valid decisions advance the policy state.
+    """
+    processed = build_strategy_inputs(repository)
+    policy_as_of = (
+        processed.inputs.as_of
+        if processed.inputs is not None
+        else datetime.fromisoformat(processed.diagnostics["market_date"]).date()
+    )
+    policy_state = repository.policy_state_for_evaluation(DvlV2Policy.version, policy_as_of)
+    if processed.inputs is None:
+        invalid_inputs = StrategyInputs(as_of=policy_as_of, critical_data_safe=False)
+        decision = DvlV2Policy().evaluate(invalid_inputs, policy_state)
+        decision = replace(
+            decision,
+            reasons=tuple((*decision.reasons, *processed.missing)),
+            diagnostics={**processed.diagnostics, "run_id": run_id},
+        )
+    else:
+        decision = DvlV2Policy().evaluate(processed.inputs, policy_state)
+        decision = replace(
+            decision,
+            diagnostics={**processed.diagnostics, **decision.diagnostics, "run_id": run_id},
+        )
+    row = repository.append_strategy_decision(
+        decision,
+        input_snapshot_ids=list(processed.snapshot_ids),
+        state_before=policy_state,
+        advance_policy_state=True,
+    )
+    return row, decision, processed
 
 
 def should_complete_schedule_slot(retryable_failed_jobs: list[str]) -> bool:
@@ -108,9 +157,10 @@ async def run_snapshot_scheduler(
             projection_engine.dispose()
 
     last_cycle_slot: str | None = None
+    last_account_sync_on = None
     while True:
         update_operations()
-        cycle_started = datetime.now(TAIPEI_TZ)
+        cycle_started = _now()
         cycle_run_id = str(uuid4())
         backfill_created = 0
         try:
@@ -282,12 +332,25 @@ async def run_snapshot_scheduler(
                 "taiex_valuation",
                 valuation_client.snapshot(),
             ),
+            *(
+                (
+                    f"twse_distributions_{code}",
+                    client.twse_distributions_snapshot(code, cycle_started.year),
+                )
+                for code in sorted(DEFAULT_CODES)
+            ),
         )
         for name, job in jobs:
             try:
                 source_snapshot = await job
                 if name == "twse_quotes":
                     result = source_snapshot
+                elif name.startswith("twse_distributions_"):
+                    result = await ingest_official_http_snapshot(
+                        database_url=database_url,
+                        kind=DISTRIBUTION_KIND,
+                        snapshot=source_snapshot,
+                    )
                 elif name == "taiex_valuation":
                     result = await ingest_official_valuation_snapshot(
                         database_url=database_url,
@@ -322,8 +385,9 @@ async def run_snapshot_scheduler(
             shioaji_mode == "readonly"
             and shioaji_secret_file is not None
             and shioaji_account_id
-            and (slot.startswith("account-sync") or slot.startswith("close"))
+            and (account_sync_due(cycle_started, last_account_sync_on) or slot.startswith("close"))
         ):
+            engine = None
             try:
                 load_credentials(shioaji_secret_file)
                 engine = make_engine(database_url)
@@ -335,7 +399,7 @@ async def run_snapshot_scheduler(
                         binding=shioaji_account_id,
                         capital_budget=strategy_nav,
                     )
-                engine.dispose()
+                last_account_sync_on = cycle_started.date()
                 print(
                     json.dumps(
                         {
@@ -348,7 +412,7 @@ async def run_snapshot_scheduler(
                     ),
                     flush=True,
                 )
-            except (OSError, ValueError, ShioajiUnavailable) as exc:
+            except Exception as exc:  # noqa: BLE001 - like every job: never stop the loop
                 failed_jobs.append("account_sync")
                 if is_retryable_scheduler_failure(exc):
                     retryable_failed_jobs.append("account_sync")
@@ -363,6 +427,9 @@ async def run_snapshot_scheduler(
                     ),
                     flush=True,
                 )
+            finally:
+                if engine is not None:
+                    engine.dispose()
 
         # Turn immutable source evidence into a shadow decision.  Missing or
         # stale fields are reported explicitly; no default value is invented.
@@ -371,33 +438,9 @@ async def run_snapshot_scheduler(
         try:
             with session_factory.begin() as session:
                 repository = AuditRepository(session)
-                processed = build_strategy_inputs(repository)
-                policy_as_of = (
-                    processed.inputs.as_of
-                    if processed.inputs is not None
-                    else datetime.fromisoformat(processed.diagnostics["market_date"]).date()
-                )
-                policy_state = repository.policy_state_for_evaluation(
-                    DvlV2Policy.version, policy_as_of
-                )
-                if processed.inputs is None:
+                row, decision, processed = record_shadow_decision(repository, cycle_run_id)
+                if not decision.valid:
                     missing_inputs = processed.missing
-                    # Persist the invalid run so the dashboard cannot display
-                    # an older, now-stale target as if it were current.
-                    invalid_inputs = StrategyInputs(as_of=policy_as_of, critical_data_safe=True)
-                    invalid_decision = DvlV2Policy().evaluate(invalid_inputs, policy_state)
-                    invalid_decision = replace(
-                        invalid_decision,
-                        reasons=tuple((*invalid_decision.reasons, *processed.missing)),
-                        diagnostics={**processed.diagnostics, "run_id": cycle_run_id},
-                    )
-                    row = repository.append_strategy_decision(
-                        invalid_decision,
-                        input_snapshot_ids=list(processed.snapshot_ids),
-                        state_before=policy_state,
-                        advance_policy_state=True,
-                    )
-                    evaluation_id = row.evaluation_id
                     print(
                         json.dumps(
                             {
@@ -405,7 +448,7 @@ async def run_snapshot_scheduler(
                                 "strategy": DvlV2Policy.version,
                                 "reason": "missing_required_inputs",
                                 "missing": processed.missing,
-                                "evaluation_id": evaluation_id,
+                                "evaluation_id": row.evaluation_id,
                                 "diagnostics": processed.diagnostics,
                                 "at": datetime.now(TAIPEI_TZ).isoformat(),
                             },
@@ -414,21 +457,6 @@ async def run_snapshot_scheduler(
                         flush=True,
                     )
                 else:
-                    decision = DvlV2Policy().evaluate(processed.inputs, policy_state)
-                    decision = replace(
-                        decision,
-                        diagnostics={
-                            **processed.diagnostics,
-                            **decision.diagnostics,
-                            "run_id": cycle_run_id,
-                        },
-                    )
-                    row = repository.append_strategy_decision(
-                        decision,
-                        input_snapshot_ids=list(processed.snapshot_ids),
-                        state_before=policy_state,
-                        advance_policy_state=True,
-                    )
                     print(
                         json.dumps(
                             {
@@ -440,10 +468,7 @@ async def run_snapshot_scheduler(
                                 "raw_target": str(decision.raw_target),
                                 "safety_state": decision.safety_state.value,
                                 "reasons": decision.reasons,
-                                "diagnostics": {
-                                    **processed.diagnostics,
-                                    **decision.diagnostics,
-                                },
+                                "diagnostics": decision.diagnostics,
                                 "at": datetime.now(TAIPEI_TZ).isoformat(),
                             },
                             ensure_ascii=False,

@@ -36,10 +36,16 @@ class TelegramNotifier:
 
 
 def _secrets(path: Path | None) -> dict[str, str]:
-    if path is None or not path.exists():
+    if path is None:
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        # Missing file, or a directory Docker created for an absent bind mount:
+        # notifications are optional, so treat it as "not configured".
         return {}
     values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         key, separator, value = line.partition("=")
         if separator and key.strip() and value.strip():
             values[key.strip()] = value.strip()
