@@ -14,7 +14,6 @@ from dynamic_leverage.services.research_evidence import research_evidence
 ROOT = Path(__file__).resolve().parents[2]
 
 
-
 def main():
     out = ROOT / "docs/research/stage-comparison-results-20260928"
     out.mkdir(exist_ok=False)

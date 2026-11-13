@@ -48,9 +48,9 @@ flowchart LR
 
 ## 已驗證到哪裡
 
-2026-11-11本機驗證快照：459項後端自動測試、靜態與格式檢查通過；前端型別檢查、13項前端單元測試及建置通過。先前公開前檢查亦在乾淨副本、全新Python環境完成安裝、API展示與套件打包。這是指定日期的本機驗證紀錄；[CI設定](.github/workflows/ci.yml)另在每次推送執行同一組檢查，並加上PostgreSQL遷移、API測試及Docker建置，結果以上方徽章為準。
+2026-11-13本機驗證快照：459項後端自動測試、靜態與格式檢查通過；前端型別檢查、13項前端單元測試、建置及npm audit（0項漏洞）通過。Docker Compose以空白secret檔完整啟動四個服務：PostgreSQL、API、排程器與網頁皆健康，API遷移至最新版本並以非root使用者執行，網頁經nginx代理讀到API。先前公開前檢查亦在乾淨副本、全新Python環境完成安裝、API展示與套件打包。這是指定日期的本機驗證紀錄；[CI設定](.github/workflows/ci.yml)另在每次推送執行同一組檢查，並加上PostgreSQL遷移、API測試及Docker建置，結果以上方徽章為準。
 
-**仍有界線：** Docker完整啟動未驗證，API缺少多人登入權限，只供本機使用；公開副本未含完整私人研究輸入，不能一鍵重建所有歷史實驗。沒有將測試通過當作策略獲利證明。[完整公開前檢查](docs/PUBLIC-REVIEW.md) · [研究方法與限制](docs/RESEARCH.md)
+**仍有界線：** Docker只驗證到未綁定券商的啟動，尚未以真實唯讀帳戶長時間運行；API缺少多人登入權限，只供本機使用；公開副本未含完整私人研究輸入，不能一鍵重建所有歷史實驗。沒有將測試通過當作策略獲利證明。[完整公開前檢查](docs/PUBLIC-REVIEW.md) · [研究方法與限制](docs/RESEARCH.md)
 
 接著可依下方免帳號流程執行，或先從上述三個案例的測試讀起。
 
@@ -135,7 +135,7 @@ Compose服務內改用PostgreSQL，由Alembic（資料庫結構版本管理工�
 ```powershell
 python -m pytest
 python -m ruff check src tests scripts migrations
-python -m ruff format --check src tests migrations
+python -m ruff format --check src tests scripts migrations
 python -m pip wheel --no-deps --no-cache-dir --wheel-dir dist .
 
 cd frontend

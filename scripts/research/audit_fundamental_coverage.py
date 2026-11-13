@@ -20,7 +20,6 @@ from dynamic_leverage.services.fundamental_signal import (
 ROOT = Path(__file__).resolve().parents[2]
 
 
-
 def run(output: Path):
     if output.exists():
         raise FileExistsError("use a new coverage output")

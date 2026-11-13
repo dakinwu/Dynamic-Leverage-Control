@@ -212,8 +212,8 @@ docker compose exec api dvl shioaji-accounts
 $env:PYTHONDONTWRITEBYTECODE='1'
 $env:PYTHONPATH='src'
 pytest -q -p no:cacheprovider
-ruff check src tests migrations
-ruff format --check src tests migrations
+ruff check src tests scripts migrations
+ruff format --check src tests scripts migrations
 ```
 
 前端：

@@ -31,7 +31,6 @@ from dynamic_leverage.services.research_artifacts import json_report
 ROOT = Path(__file__).resolve().parents[2]
 
 
-
 def load_source(folder: Path, entry: dict) -> SourceObservation:
     path = (folder / entry["raw_file"]).resolve()
     if not path.is_relative_to(folder.resolve()):

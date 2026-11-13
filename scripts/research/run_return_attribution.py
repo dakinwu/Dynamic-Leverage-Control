@@ -155,7 +155,7 @@ def run():
         yearly, quarters, states = defaultdict(list), defaultdict(list), defaultdict(list)
         for day in path:
             yearly[str(day["date"].year)].append(day)
-            quarters[f"{day['date'].year}-Q{(day['date'].month-1)//3+1}"].append(day)
+            quarters[f"{day['date'].year}-Q{(day['date'].month - 1) // 3 + 1}"].append(day)
             states[day["prior_state"]].append(day)
         yearly = {n: segment(p) for n, p in yearly.items()}
         quarters = {n: segment(p) for n, p in quarters.items()}
@@ -339,7 +339,7 @@ def render(report):
         ]
         last = None
         for n, v in a["cagr_levels"].items():
-            delta = "—" if last is None else f"{(v-last)*100:+.2f}"
+            delta = "—" if last is None else f"{(v - last) * 100:+.2f}"
             lines.append(f"| {names[n]} | {v:.2%} | {delta} |")
             last = v
         lines += [

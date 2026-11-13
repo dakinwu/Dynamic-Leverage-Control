@@ -28,7 +28,6 @@ from dynamic_leverage.services.historical_study import research_inputs
 ROOT = Path(__file__).resolve().parents[2]
 
 
-
 OUT = ROOT / "docs/research/risk-replay-results-20260918"
 
 

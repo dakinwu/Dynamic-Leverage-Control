@@ -30,7 +30,6 @@ from dynamic_leverage.services.research_registry import (
 ROOT = Path(__file__).resolve().parents[2]
 
 
-
 START, END = date(2017, 3, 30), date(2026, 9, 17)
 SPEC = {
     "route_id": "R17",

@@ -13,7 +13,6 @@ from dynamic_leverage.services.research_artifacts import read_dataset
 ROOT = Path(__file__).resolve().parents[2]
 
 
-
 def main():
     audit_path = ROOT / "docs/research/official-etf-audit-20260928.json"
     audit = json.loads(audit_path.read_bytes())

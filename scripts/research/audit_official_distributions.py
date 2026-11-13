@@ -22,7 +22,6 @@ from dynamic_leverage.services.research_artifacts import read_dataset
 ROOT = Path(__file__).resolve().parents[2]
 
 
-
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
