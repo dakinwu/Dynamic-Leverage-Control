@@ -11,13 +11,18 @@ from dynamic_leverage.services.benchmark_comparison import compare_stages
 REFERENCE = Path(__file__).parents[1] / "reference"
 
 
+def _content_sha256(path: Path) -> str:
+    """Digest of LF-normalized bytes, so git's per-platform line endings do not matter."""
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
 def research_evidence(selected_version: str, *, root: Path = REFERENCE) -> dict:
     try:
         registry = json.loads((root / "research-registry.json").read_bytes())
         for name, digest in registry["evidence_files"].items():
             if Path(name).name != name:
                 raise ValueError("invalid evidence path")
-            if hashlib.sha256((root / name).read_bytes()).hexdigest() != digest:
+            if _content_sha256(root / name) != digest:
                 raise ValueError("research evidence fingerprint mismatch")
         for record in registry["records"]:
             identity = json.dumps(record["identity"], sort_keys=True).encode()

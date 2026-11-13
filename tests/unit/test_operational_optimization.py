@@ -216,6 +216,16 @@ def test_archived_failure_is_not_runtime_qualification_and_tampering_invalidates
     assert research_evidence("drawdown-budget:rearm", root=tmp_path)["records"] == []
 
 
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
+def test_research_evidence_fingerprint_ignores_checkout_line_endings(tmp_path, newline):
+    # git autocrlf rewrites text files per platform; the fingerprint pins content.
+    for p in REFERENCE.glob("*"):
+        body = p.read_bytes().replace(b"\r\n", b"\n")
+        (tmp_path / p.name).write_bytes(body.replace(b"\n", newline))
+    evidence = research_evidence("dvl-tw-v2-shadow", root=tmp_path)
+    assert evidence["evidence_status"] == "verified-archive"
+
+
 def test_changed_configuration_never_inherits_research_qualification(tmp_path):
     for p in REFERENCE.glob("*"):
         shutil.copy2(p, tmp_path / p.name)

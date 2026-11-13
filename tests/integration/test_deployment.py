@@ -60,4 +60,15 @@ def test_compose_without_env_mounts_the_existing_empty_secret_template(tmp_path:
         source = Path(mount["source"])
         assert source.resolve() == (ROOT / "config" / "empty-secrets.env").resolve()
         assert source.is_file()
-        assert mount.get("bind", {}).get("create_host_path") is False
+        # Older Compose omits a false create_host_path from `config` output, so
+        # absent is accepted here; the declaration itself is checked below.
+        assert mount.get("bind", {}).get("create_host_path", False) is False
+
+
+def test_compose_secret_mounts_declare_no_host_path_creation() -> None:
+    lines = (ROOT / "docker-compose.yml").read_text(encoding="utf-8").splitlines()
+    targets = [i for i, line in enumerate(lines) if "target: /run/secrets/runtime.env" in line]
+
+    assert targets
+    for i in targets:
+        assert any("create_host_path: false" in line for line in lines[i + 1 : i + 5])

@@ -76,7 +76,10 @@ def test_raw_zip_preserved_and_synthetic_eps_not_archived(db):
         assert base64.b64decode(raw.payload["body_base64"]) == snap.valuation.body
         assert raw.published_at is None
         assert raw.payload["body_sha256"] == snap.valuation.checksum
-        assert parsed.received_at.replace(tzinfo=UTC) == snap.index.received_at
+        # The fixture stamps each response with its own now(); availability is the latest.
+        assert parsed.received_at.replace(tzinfo=UTC) == max(
+            snap.valuation.received_at, snap.index.received_at, snap.eps.received_at
+        )
 
 
 def test_repeated_fetches_preserve_observations_without_duplicating_parsed_value(db):
