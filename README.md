@@ -112,6 +112,21 @@ Compose服務內改用PostgreSQL，由Alembic（資料庫結構版本管理工�
 
 有意取得官方市場資料時才另執行`docker compose up -d scheduler`，這會產生外部網路請求。啟用唯讀帳戶前閱讀[進階操作](docs/OPERATIONS.md)。展示機不要執行會自動讀取本機既有憑證的secrets wizard或launcher。
 
+## 升級既有安裝
+
+全新安裝可略過本節。
+
+**Docker（PostgreSQL）**：API容器每次啟動都會執行`alembic upgrade head`，重建映像就會直接改動資料庫結構，所以先備份：
+
+```powershell
+.\scripts\ops\Backup-DvlDatabase.ps1 -VerifyRestore
+docker compose up -d --build postgres api web
+```
+
+備份以目前Windows使用者加密，存於`data/private/backups`，只有同一使用者能解開；`-VerifyRestore`會把備份還原到一個暫時資料庫確認可用，再刪掉該暫時庫。原本有啟用scheduler的話，第二行最後加上`scheduler`。
+
+**SQLite（免帳號展示）**：`AUTO_CREATE_SCHEMA`只會建立缺少的資料表，不會替舊資料表補欄位，因此舊的`dynamic_leverage.db`要刪除後重建。舊檔內的時間戳也無法沿用：時間戳改為一律以UTC儲存前，SQLite存下的值會被讀成晚8小時、落在未來，系統會將新鮮度視為未知而阻擋，資料需重新擷取。PostgreSQL本來就保存時區，沒有這個問題。
+
 ## 設定
 
 `.env.example`是免帳號展示設定，所有啟用值均對應程式Settings；`DVL_SECRET_FILE`僅供Compose掛載。API未透過`--env-file`啟動時，改以作業系統環境變數傳入。
